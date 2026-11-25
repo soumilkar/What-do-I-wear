@@ -1,0 +1,8 @@
+{
+  "name": "What do I Wear?",
+  "description": "Personal AI styling studio that analyzes your wardrobe with image vectors, ranks personalized outfit combinations for your body and style, lets you build custom lookbooks, and pairs you with a trend-aware shopping advisor.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
