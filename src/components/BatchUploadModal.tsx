@@ -113,8 +113,8 @@ export function BatchUploadModal({
         compressed.push(await compressClothingImage(queue[i].file, 1024));
       }
 
-      // Send in smooth chunks of 8 so up to 50 items progress cleanly without timeouts
-      const chunkSize = 8;
+      // Send in smooth chunks of 4 so up to 50 items progress cleanly within serverless payload limits
+      const chunkSize = 4;
       for (let start = 0; start < compressed.length; start += chunkSize) {
         const chunk = compressed.slice(start, start + chunkSize);
         setProgress({

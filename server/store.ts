@@ -24,6 +24,11 @@ export interface PersistedStore {
 }
 
 function resolveWritableDataDir(): string {
+  if (process.env.VERCEL) {
+    const vercelTmp = path.join(os.tmpdir(), 'what-do-i-wear-data');
+    fs.mkdirSync(vercelTmp, { recursive: true });
+    return vercelTmp;
+  }
   const preferred = path.resolve(process.cwd(), 'data');
   try {
     fs.mkdirSync(preferred, { recursive: true });
@@ -402,6 +407,14 @@ export function resolveSafeUploadPath(filename: string): string | null {
 }
 
 export function readImageAsBase64(imageUrl: string): { base64: string; mimeType: string } | null {
+  if (imageUrl.startsWith('data:')) {
+    const match = imageUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (match) {
+      return { mimeType: match[1], base64: match[2] };
+    }
+    return null;
+  }
+
   let filePath: string | null = null;
   if (imageUrl.startsWith('/uploads/')) {
     filePath = resolveSafeUploadPath(imageUrl.slice('/uploads/'.length));
