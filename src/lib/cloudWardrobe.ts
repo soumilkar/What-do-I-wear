@@ -4,6 +4,7 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   query,
   serverTimestamp,
@@ -27,11 +28,9 @@ import type {
 } from '../types/styling';
 import {
   analyzeWardrobeGaps,
-  buildLocalFallbackCombinations,
   computeDeterministicVector,
   evaluateOutfitLocalHarmony,
   findBestCompanions,
-  generateCandidateCombinations,
 } from '../utils/styleEngine';
 import { db, handleFirestoreError, OperationType } from './firebase';
 
@@ -126,177 +125,60 @@ function sanitizeBlueprint(bp: AIProfileBlueprint | null): AIProfileBlueprint | 
   return out;
 }
 
-function buildStarterGarments(nowIso: string): Garment[] {
-  return [
-    {
-      id: 'seed_camel_overcoat',
-      name: 'Camel Double-Breasted Overcoat',
-      category: 'outerwear',
-      subCategory: 'Overcoat',
-      imageUrl: '/src/assets/images/garment_camel_overcoat_1795548620677.jpg',
-      primaryColor: 'Camel',
-      colorHex: '#C29B6C',
-      secondaryColors: ['Espresso Horn'],
-      undertone: 'Warm',
-      fabric: 'Brushed camel wool twill',
-      fabricWeight: 'Heavyweight',
-      texture: 'Soft brushed nap',
-      fit: 'Structured tailored',
-      silhouette: 'Longline double-breasted peak lapel',
-      pattern: 'Solid',
-      formality: 8,
-      seasons: ['Autumn', 'Winter'],
-      occasions: ['Smart Casual', 'Formal', 'Evening'],
-      stylingNotes: 'Creates an elongated vertical column over fine knits and pleated wool.',
-      layeringRole: 'Outer',
-      brand: 'Atelier Capsule',
-      wearCount: 3,
-      hasVector: true,
-      vectorSource: 'semantic-fallback',
-      modelUsed: 'gemini-4-hydrogen (seed)',
-      createdAt: nowIso,
-    },
-    {
-      id: 'seed_ivory_sweater',
-      name: 'Ivory Fine-Gauge Merino Crewneck',
-      category: 'tops',
-      subCategory: 'Knitwear',
-      imageUrl: '/src/assets/images/garment_ivory_sweater_1795548634934.jpg',
-      primaryColor: 'Ivory',
-      colorHex: '#EFECE3',
-      secondaryColors: [],
-      undertone: 'Warm',
-      fabric: 'Extra-fine Italian merino wool',
-      fabricWeight: 'Midweight',
-      texture: 'Fine micro-rib knit',
-      fit: 'Relaxed tailored',
-      silhouette: 'Clean crew neck with ribbed cuffs',
-      pattern: 'Solid',
-      formality: 6,
-      seasons: ['Spring', 'Autumn', 'Winter'],
-      occasions: ['Everyday', 'Smart Casual', 'Travel'],
-      stylingNotes: 'Brightens dark bottoms and layers cleanly beneath coats without bulk.',
-      layeringRole: 'Mid',
-      brand: 'Atelier Capsule',
-      wearCount: 7,
-      hasVector: true,
-      vectorSource: 'semantic-fallback',
-      modelUsed: 'gemini-4-hydrogen (seed)',
-      createdAt: nowIso,
-    },
-    {
-      id: 'seed_sky_oxford',
-      name: 'Sky Blue Brushed Cotton Oxford',
-      category: 'tops',
-      subCategory: 'Button-Down Shirt',
-      imageUrl: '/src/assets/images/garment_sky_oxford_shirt_1795548619953.jpg',
-      primaryColor: 'Sky Blue',
-      colorHex: '#A7C3DE',
-      secondaryColors: ['Mother-of-Pearl'],
-      undertone: 'Cool',
-      fabric: 'Brushed 2-ply cotton Oxford weave',
-      fabricWeight: 'Midweight',
-      texture: 'Crisp matte basketweave',
-      fit: 'Tailored modern',
-      silhouette: 'Structured collar with curved hem',
-      pattern: 'Solid',
-      formality: 7,
-      seasons: ['All-Season'],
-      occasions: ['Smart Casual', 'Formal', 'Everyday'],
-      stylingNotes: 'Works untucked with raw selvedge denim or crisply tucked into wool trousers.',
-      layeringRole: 'Base',
-      brand: 'Atelier Capsule',
-      wearCount: 9,
-      hasVector: true,
-      vectorSource: 'semantic-fallback',
-      modelUsed: 'gemini-4-hydrogen (seed)',
-      createdAt: nowIso,
-    },
-    {
-      id: 'seed_charcoal_trousers',
-      name: 'Charcoal Double-Pleat Wool Trousers',
-      category: 'bottoms',
-      subCategory: 'Tailored Trousers',
-      imageUrl: '/src/assets/images/garment_charcoal_trousers_1795548618728.jpg',
-      primaryColor: 'Charcoal',
-      colorHex: '#3E4145',
-      secondaryColors: [],
-      undertone: 'Neutral',
-      fabric: 'High-twist worsted tropical wool',
-      fabricWeight: 'Midweight',
-      texture: 'Smooth fluid drape',
-      fit: 'Tailored relaxed taper',
-      silhouette: 'High-rise double-pleat with turn-up cuff',
-      pattern: 'Solid',
-      formality: 8,
-      seasons: ['All-Season'],
-      occasions: ['Smart Casual', 'Formal', 'Evening'],
-      stylingNotes: 'High waist and pressed crease visually lengthen the lower silhouette.',
-      layeringRole: 'Bottom',
-      brand: 'Atelier Capsule',
-      wearCount: 8,
-      hasVector: true,
-      vectorSource: 'semantic-fallback',
-      modelUsed: 'gemini-4-hydrogen (seed)',
-      createdAt: nowIso,
-    },
-    {
-      id: 'seed_indigo_denim',
-      name: 'Raw Indigo Selvedge Straight Denim',
-      category: 'bottoms',
-      subCategory: 'Denim Jeans',
-      imageUrl: '/src/assets/images/garment_indigo_denim_1795548621097.jpg',
-      primaryColor: 'Raw Indigo',
-      colorHex: '#1F2A3C',
-      secondaryColors: ['Copper Stitch'],
-      undertone: 'Cool',
-      fabric: '14oz Japanese selvedge cotton denim',
-      fabricWeight: 'Heavyweight',
-      texture: 'Structured raw twill',
-      fit: 'Straight leg',
-      silhouette: 'Mid-rise classic straight with cuffed hem',
-      pattern: 'Solid',
-      formality: 4,
-      seasons: ['All-Season'],
-      occasions: ['Everyday', 'Smart Casual', 'Streetwear', 'Travel'],
-      stylingNotes: 'Clean unwashed indigo dress-grades effortlessly with leather loafers and camel wool.',
-      layeringRole: 'Bottom',
-      brand: 'Atelier Capsule',
-      wearCount: 11,
-      hasVector: true,
-      vectorSource: 'semantic-fallback',
-      modelUsed: 'gemini-4-hydrogen (seed)',
-      createdAt: nowIso,
-    },
-    {
-      id: 'seed_espresso_loafers',
-      name: 'Espresso Calfskin Penny Loafers',
-      category: 'footwear',
-      subCategory: 'Penny Loafers',
-      imageUrl: '/src/assets/images/garment_espresso_loafers_1795548620942.jpg',
-      primaryColor: 'Espresso Brown',
-      colorHex: '#3B2820',
-      secondaryColors: [],
-      undertone: 'Warm',
-      fabric: 'Full-grain Italian calfskin leather',
-      fabricWeight: 'Midweight',
-      texture: 'Supple satin-sheen grain',
-      fit: 'Structured sleek',
-      silhouette: 'Almond-toe Goodyear-welted loafer',
-      pattern: 'Solid',
-      formality: 7,
-      seasons: ['All-Season'],
-      occasions: ['Smart Casual', 'Formal', 'Everyday', 'Evening'],
-      stylingNotes: 'Warm espresso tone echoes camel outerwear and grounds cool charcoal or indigo.',
-      layeringRole: 'Footwear',
-      brand: 'Atelier Capsule',
-      wearCount: 12,
-      hasVector: true,
-      vectorSource: 'semantic-fallback',
-      modelUsed: 'gemini-4-hydrogen (seed)',
-      createdAt: nowIso,
-    },
-  ];
+const LEGACY_SEED_GARMENT_IDS = new Set([
+  'seed_camel_overcoat',
+  'seed_ivory_sweater',
+  'seed_sky_oxford',
+  'seed_charcoal_trousers',
+  'seed_indigo_denim',
+  'seed_espresso_loafers',
+]);
+
+const LEGACY_SEED_COMBO_IDS = new Set([
+  'seed_combo_1',
+  'seed_combo_2',
+  'seed_combo_3',
+  'seed_combo_4',
+]);
+
+const LEGACY_SEED_SAVED_IDS = new Set(['seed_saved_1']);
+
+async function cleanupLegacySeededClothes(uid: string): Promise<void> {
+  try {
+    const [garmentsSnap, combosSnap, savedSnap] = await Promise.all([
+      getDocs(query(collection(db, 'users', uid, 'garments'), where('ownerId', '==', uid))),
+      getDocs(query(collection(db, 'users', uid, 'combinations'), where('ownerId', '==', uid))),
+      getDocs(query(collection(db, 'users', uid, 'savedOutfits'), where('ownerId', '==', uid))),
+    ]);
+
+    const batch = writeBatch(db);
+    let deleteCount = 0;
+
+    garmentsSnap.forEach((docSnap) => {
+      if (LEGACY_SEED_GARMENT_IDS.has(docSnap.id)) {
+        batch.delete(docSnap.ref);
+        deleteCount += 1;
+      }
+    });
+    combosSnap.forEach((docSnap) => {
+      if (LEGACY_SEED_COMBO_IDS.has(docSnap.id)) {
+        batch.delete(docSnap.ref);
+        deleteCount += 1;
+      }
+    });
+    savedSnap.forEach((docSnap) => {
+      if (LEGACY_SEED_SAVED_IDS.has(docSnap.id)) {
+        batch.delete(docSnap.ref);
+        deleteCount += 1;
+      }
+    });
+
+    if (deleteCount > 0) {
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${uid}/seed_cleanup`);
+  }
 }
 
 function buildGarmentFirestoreDoc(
@@ -390,8 +272,8 @@ function buildOutfitFirestoreDoc(uid: string, outfit: Omit<OutfitCombination, 'i
 }
 
 /**
- * Ensures a newly signed-in user has their own private cloud profile and starter Atelier capsule.
- * Writes the parent /users/{uid} document first so Master Gate parent existence rules pass.
+ * Ensures a signed-in user has their own private cloud profile (with zero pre-uploaded clothes)
+ * and removes any legacy pre-uploaded starter clothes from earlier sessions.
  */
 export async function ensureUserWorkspaceSeeded(user: User): Promise<void> {
   const uid = user.uid;
@@ -406,51 +288,32 @@ export async function ensureUserWorkspaceSeeded(user: User): Promise<void> {
   }
 
   if (snap.exists()) {
+    await cleanupLegacySeededClothes(uid);
     return;
   }
 
-  const nowIso = new Date().toISOString();
   const displayName = clampString(
     user.displayName || user.email?.split('@')[0] || 'Style Member',
     80,
     'Style Member'
   );
-  const photoUrl = clampString(
-    user.photoURL || '/src/assets/images/profile_style_portrait_1795548618654.jpg',
-    250000
-  );
-
-  const starterProfile: UserProfile = {
-    name: displayName,
-    photoUrl,
-    bio: 'Curating a versatile, high-craft wardrobe across workdays, dinners, and weekend travel. Update your details and portrait anytime for tailored AI recommendations.',
-    height: '',
-    bodyType: 'Balanced',
-    skinUndertone: 'Neutral',
-    preferredFits: ['Tailored', 'Relaxed'],
-    styleAesthetics: ['Quiet Luxury', 'Modern Tailoring'],
-    budgetRange: 'Contemporary',
-    climate: 'Four-Season',
-    stylingGoals: 'Maximize effortless outfit combinations from my cloud wardrobe.',
-    blueprint: null,
-    updatedAt: nowIso,
-  };
+  const photoUrl = clampString(user.photoURL || '', 250000);
 
   // Step 1: Create parent /users/{uid} document first
   try {
     await setDoc(userRef, {
       ownerId: uid,
-      name: starterProfile.name,
-      photoUrl: starterProfile.photoUrl,
-      bio: starterProfile.bio,
-      height: starterProfile.height,
-      bodyType: starterProfile.bodyType,
-      skinUndertone: starterProfile.skinUndertone,
-      preferredFits: starterProfile.preferredFits,
-      styleAesthetics: starterProfile.styleAesthetics,
-      budgetRange: starterProfile.budgetRange,
-      climate: starterProfile.climate,
-      stylingGoals: starterProfile.stylingGoals,
+      name: displayName,
+      photoUrl,
+      bio: '',
+      height: '',
+      bodyType: 'Balanced',
+      skinUndertone: 'Neutral',
+      preferredFits: ['Tailored', 'Relaxed'],
+      styleAesthetics: ['Quiet Luxury', 'Modern Tailoring'],
+      budgetRange: 'Contemporary',
+      climate: 'Four-Season',
+      stylingGoals: 'Maximize effortless outfit combinations from my cloud wardrobe.',
       blueprint: null,
       seeded: true,
       createdAt: serverTimestamp(),
@@ -460,81 +323,16 @@ export async function ensureUserWorkspaceSeeded(user: User): Promise<void> {
     handleFirestoreError(error, OperationType.CREATE, userPath);
   }
 
-  // Step 2: Seed private starter wardrobe, combinations, lookbook & advisor welcome in one batch
-  const garments = buildStarterGarments(nowIso);
-  const vectors: Record<string, number[]> = {};
-  for (const g of garments) {
-    vectors[g.id] = computeDeterministicVector(g);
-  }
-
-  const candidates = generateCandidateCombinations(garments, vectors, {
-    occasion: 'Smart Casual',
-    season: 'Autumn',
-    maxCandidates: 4,
-  });
-
-  const ranked = buildLocalFallbackCombinations(
-    candidates,
-    starterProfile,
-    'Smart Casual',
-    'Autumn'
-  ).map((combo, idx) => {
-    const pieces = combo.itemIds
-      .map((id) => garments.find((g) => g.id === id))
-      .filter((g): g is Garment => Boolean(g));
-    const hasCoat = pieces.some((p) => p.category === 'outerwear');
-    const top = pieces.find((p) => p.category === 'tops');
-    const bottom = pieces.find((p) => p.category === 'bottoms');
-    const title = hasCoat
-      ? `Camel Overcoat over ${top?.primaryColor ?? 'Fine'} & ${bottom?.primaryColor ?? 'Tailored'}`
-      : `${top?.primaryColor ?? 'Refined'} ${top?.subCategory === 'Knitwear' ? 'Merino' : 'Oxford'} & ${bottom?.primaryColor ?? 'Tailored'} Edit`;
-    return {
-      ...combo,
-      id: `seed_combo_${idx + 1}`,
-      title,
-      saved: idx === 0,
-      modelUsed: 'gemini-4-hydrogen (balanced)',
-    };
-  });
-
-  const batch = writeBatch(db);
-  for (const g of garments) {
-    const { id, createdAt: _c, ...rest } = g;
-    batch.set(
-      doc(db, 'users', uid, 'garments', id),
-      buildGarmentFirestoreDoc(uid, rest, vectors[id])
-    );
-  }
-
-  for (const combo of ranked) {
-    const { id, createdAt: _c, ...rest } = combo;
-    batch.set(
-      doc(db, 'users', uid, 'combinations', id),
-      buildOutfitFirestoreDoc(uid, rest)
-    );
-  }
-
-  if (ranked[0]) {
-    const { id: _id, createdAt: _c, ...firstRest } = ranked[0];
-    batch.set(
-      doc(db, 'users', uid, 'savedOutfits', 'seed_saved_1'),
-      buildOutfitFirestoreDoc(uid, { ...firstRest, saved: true, wearCount: 1 })
-    );
-  }
-
-  batch.set(doc(db, 'users', uid, 'advisorMessages', 'seed_msg_1'), {
-    ownerId: uid,
-    role: 'assistant',
-    content: `Welcome to your private cloud wardrobe, ${displayName}. Every item you upload, outfit you save, and style note you update syncs securely to your account across devices.\n\nYou can keep or remove these 6 starter Atelier pieces anytime, or tap Add Clothes to upload up to 50 pieces from your own closet.`,
-    referencedItemIds: ['seed_camel_overcoat', 'seed_charcoal_trousers', 'seed_espresso_loafers'],
-    modelUsed: 'gemini-4-hydrogen (fast)',
-    createdAt: serverTimestamp(),
-  });
-
+  // Step 2: Add a clean Shopping Advisor welcome message (no pre-uploaded clothes)
   try {
-    await batch.commit();
+    await setDoc(doc(db, 'users', uid, 'advisorMessages', 'seed_msg_1'), {
+      ownerId: uid,
+      role: 'assistant',
+      content: `Welcome to your private cloud wardrobe, ${displayName}. Tap Add Clothes to upload up to 50 pieces from your closet—every fabric, fit, and image vector is saved securely to your account across devices.`,
+      createdAt: serverTimestamp(),
+    });
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `${userPath}/seed`);
+    handleFirestoreError(error, OperationType.CREATE, `${userPath}/advisorMessages/seed_msg_1`);
   }
 }
 

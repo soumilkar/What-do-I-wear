@@ -34,7 +34,6 @@ import {
   evaluateOutfitLocalHarmony,
   generateCandidateCombinations,
   MAX_BATCH_UPLOAD_FILES,
-  MAX_SINGLE_FILE_BYTES,
 } from '../src/utils/styleEngine.ts';
 
 const IS_VERCEL = Boolean(process.env.VERCEL);
@@ -61,7 +60,6 @@ const upload = multer({
   storage: uploadStorage,
   limits: {
     files: MAX_BATCH_UPLOAD_FILES,
-    fileSize: MAX_SINGLE_FILE_BYTES,
   },
   fileFilter: (_req, file, cb) => {
     if (ALLOWED_IMAGE_MIME_TYPES.has(file.mimetype.toLowerCase())) {

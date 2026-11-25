@@ -10,7 +10,6 @@ import type {
 } from '../types/styling.ts';
 
 export const MAX_BATCH_UPLOAD_FILES = 50;
-export const MAX_SINGLE_FILE_BYTES = 10 * 1024 * 1024; // 10MB
 export const ALLOWED_IMAGE_MIME_TYPES = new Set([
   'image/jpeg',
   'image/jpg',
@@ -47,8 +46,8 @@ export function validateUploadBatch(
       errors.push(`"${file.name}" is not a supported image format (JPEG, PNG, WebP, or AVIF).`);
       continue;
     }
-    if (file.size <= 0 || file.size > MAX_SINGLE_FILE_BYTES) {
-      errors.push(`"${file.name}" exceeds the 10 MB per-photo limit.`);
+    if (file.size <= 0) {
+      errors.push(`"${file.name}" appears to be an empty file.`);
       continue;
     }
     acceptedCount += 1;

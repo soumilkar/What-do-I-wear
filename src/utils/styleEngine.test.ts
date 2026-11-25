@@ -158,6 +158,9 @@ test('validateUploadBatch enforces 50-item maximum and valid MIME types', () => 
   const tooMany = [...validFiles, { name: 'extra.jpg', type: 'image/jpeg', size: 100_000 }];
   assert.equal(validateUploadBatch(tooMany).valid, false);
 
+  const largePhoto = [{ name: 'raw-dslr.jpg', type: 'image/jpeg', size: 28 * 1024 * 1024 }];
+  assert.equal(validateUploadBatch(largePhoto).valid, true);
+
   const badType = [{ name: 'doc.pdf', type: 'application/pdf', size: 50_000 }];
   assert.equal(validateUploadBatch(badType).valid, false);
 });
