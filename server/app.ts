@@ -682,5 +682,211 @@ export function createApiApp(): express.Express {
     res.json({ bootstrap: getBootstrapPayload() });
   });
 
+  // =========================================================================
+  // Stateless AI Compute Endpoints (used by Firebase Cloud Wardrobe clients)
+  // Zero server-side user state required — works identically on Vercel & Cloud Run
+  // =========================================================================
+
+  // Stateless single-garment forensic AI inspection + 128-dim image vector
+  app.post('/api/ai/analyze-garment', async (req, res) => {
+    const body = req.body as {
+      base64?: string;
+      mimeType?: string;
+      fileName?: string;
+      imageUrl?: string;
+    };
+
+    let base64 = typeof body.base64 === 'string' ? body.base64.trim() : '';
+    let mimeType = typeof body.mimeType === 'string' ? body.mimeType.trim() : 'image/jpeg';
+
+    if (!base64 && typeof body.imageUrl === 'string' && body.imageUrl.trim()) {
+      const loaded = readImageAsBase64(body.imageUrl.trim());
+      if (loaded) {
+        base64 = loaded.base64;
+        mimeType = loaded.mimeType;
+      }
+    }
+
+    if (!base64 || !ALLOWED_IMAGE_MIME_TYPES.has(mimeType.toLowerCase())) {
+      res.status(400).json({ error: 'Provide a valid clothing image for AI inspection.' });
+      return;
+    }
+
+    try {
+      const { garment: analyzed, modelUsed } = await analyzeGarmentWithAI(
+        base64,
+        mimeType,
+        typeof body.fileName === 'string' ? body.fileName.slice(0, 120) : undefined
+      );
+      const { vector, source: vectorSource } = await generateGarmentVector(
+        base64,
+        mimeType,
+        analyzed
+      );
+      res.json({ analyzed, vector, vectorSource, modelUsed });
+    } catch (err) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : 'Garment analysis failed.',
+      });
+    }
+  });
+
+  // Stateless outfit combination ranking from user's cloud wardrobe + vectors
+  app.post('/api/ai/rank-combinations', async (req, res) => {
+    const body = req.body as {
+      garments?: Garment[];
+      vectors?: Record<string, number[]>;
+      profile?: import('../src/types/styling.ts').UserProfile;
+      occasion?: OccasionType;
+      season?: SeasonTag;
+      anchorItemId?: string;
+    };
+
+    const garments = Array.isArray(body.garments) ? body.garments.slice(0, 120) : [];
+    const vectors = body.vectors && typeof body.vectors === 'object' ? body.vectors : {};
+    const profile = body.profile;
+
+    if (garments.length < 2 || !profile) {
+      res.status(400).json({
+        error: 'Add at least one top and one bottom to generate personalized combinations.',
+      });
+      return;
+    }
+
+    const occasion: OccasionType = body.occasion || 'Smart Casual';
+    const season: SeasonTag = body.season || 'All-Season';
+    const anchorItemId =
+      typeof body.anchorItemId === 'string' && body.anchorItemId.trim()
+        ? body.anchorItemId.trim()
+        : undefined;
+
+    const candidates = generateCandidateCombinations(garments, vectors, {
+      occasion,
+      season,
+      anchorItemId,
+      maxCandidates: 5,
+    });
+
+    if (candidates.length === 0) {
+      res.status(400).json({
+        error:
+          'Add at least one top and one bottom (and ensure your selected anchor piece fits) to generate combinations.',
+      });
+      return;
+    }
+
+    try {
+      const { combinations, modelUsed } = await rankCombinationsWithAI(
+        candidates,
+        profile,
+        occasion,
+        season
+      );
+      res.json({ combinations, modelUsed });
+    } catch (err) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : 'Failed to rank combinations.',
+      });
+    }
+  });
+
+  // Stateless AI critique for a user-built custom outfit
+  app.post('/api/ai/critique-outfit', async (req, res) => {
+    const body = req.body as {
+      items?: Garment[];
+      profile?: import('../src/types/styling.ts').UserProfile;
+      occasion?: OccasionType;
+    };
+
+    const items = Array.isArray(body.items) ? body.items.slice(0, 10) : [];
+    if (items.length < 2 || !body.profile) {
+      res.status(400).json({ error: 'Select at least 2 pieces for an AI styling critique.' });
+      return;
+    }
+
+    try {
+      const critique = await critiqueCustomOutfitWithAI(
+        items,
+        body.profile,
+        body.occasion || 'Smart Casual'
+      );
+      res.json(critique);
+    } catch (err) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : 'Failed to critique outfit.',
+      });
+    }
+  });
+
+  // Stateless Personal Styling Blueprint analysis from profile + portrait
+  app.post('/api/ai/analyze-profile', async (req, res) => {
+    const body = req.body as {
+      profile?: import('../src/types/styling.ts').UserProfile;
+      photoBase64?: string | null;
+      photoMimeType?: string | null;
+    };
+
+    if (!body.profile) {
+      res.status(400).json({ error: 'Profile details are required.' });
+      return;
+    }
+
+    let photoBase64 = typeof body.photoBase64 === 'string' ? body.photoBase64 : null;
+    let photoMimeType = typeof body.photoMimeType === 'string' ? body.photoMimeType : null;
+
+    if (!photoBase64 && typeof body.profile.photoUrl === 'string') {
+      const loaded = readImageAsBase64(body.profile.photoUrl);
+      if (loaded) {
+        photoBase64 = loaded.base64;
+        photoMimeType = loaded.mimeType;
+      }
+    }
+
+    try {
+      const { blueprint, modelUsed } = await analyzeUserProfileWithAI(
+        body.profile,
+        photoBase64,
+        photoMimeType
+      );
+      res.json({ blueprint, modelUsed });
+    } catch (err) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : 'Failed to analyze profile.',
+      });
+    }
+  });
+
+  // Stateless Shopping Advisor chat with full compact cloud wardrobe context
+  app.post('/api/ai/advisor-chat', async (req, res) => {
+    const body = req.body as {
+      message?: string;
+      history?: AdvisorMessage[];
+      garments?: Garment[];
+      savedOutfits?: OutfitCombination[];
+      profile?: import('../src/types/styling.ts').UserProfile;
+    };
+
+    const text = typeof body.message === 'string' ? body.message.trim() : '';
+    if (!text || !body.profile) {
+      res.status(400).json({ error: 'Enter a question for your shopping advisor.' });
+      return;
+    }
+
+    try {
+      const reply = await chatWithShoppingAdvisor(
+        text.slice(0, 1000),
+        Array.isArray(body.history) ? body.history.slice(-10) : [],
+        Array.isArray(body.garments) ? body.garments.slice(0, 120) : [],
+        Array.isArray(body.savedOutfits) ? body.savedOutfits.slice(0, 20) : [],
+        body.profile
+      );
+      res.json(reply);
+    } catch (err) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : 'Shopping advisor request failed.',
+      });
+    }
+  });
+
   return app;
 }

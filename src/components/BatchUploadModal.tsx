@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, ImagePlus, Trash2, Upload, X } from 'lucide-react';
-import type { AppBootstrapData } from '../types/styling';
-import { compressClothingImage } from '../utils/imageCompress';
+import type { Garment } from '../types/styling';
+import { compressImageToDataUrl } from '../utils/imageCompress';
 import { MAX_BATCH_UPLOAD_FILES, validateUploadBatch } from '../utils/styleEngine';
+
+export interface AnalyzedCloudGarmentEntry {
+  garment: Omit<Garment, 'id' | 'createdAt'>;
+  vector: number[];
+}
 
 interface BatchUploadModalProps {
   open: boolean;
   onClose: () => void;
-  onUploadComplete: (bootstrap: AppBootstrapData, addedCount: number) => void;
+  onSaveAnalyzedGarments: (entries: AnalyzedCloudGarmentEntry[]) => Promise<void>;
 }
 
 interface QueuedPhoto {
@@ -19,7 +24,7 @@ interface QueuedPhoto {
 export function BatchUploadModal({
   open,
   onClose,
-  onUploadComplete,
+  onSaveAnalyzedGarments,
 }: BatchUploadModalProps) {
   const [queue, setQueue] = useState<QueuedPhoto[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -102,65 +107,99 @@ export function BatchUploadModal({
     setUploading(true);
 
     const total = queue.length;
-    let latestBootstrap: AppBootstrapData | null = null;
-    let addedTotal = 0;
+    const readyEntries: AnalyzedCloudGarmentEntry[] = [];
 
     try {
-      // Compress images client-side first for rapid upload & minimal AI vision tokens
-      setProgress({ done: 0, total, stage: 'Optimizing photos for minimal token vision analysis...' });
-      const compressed: File[] = [];
+      setProgress({
+        done: 0,
+        total,
+        stage: 'Optimizing photos for cloud sync and minimal AI tokens...',
+      });
+
+      const prepared: Array<{ fileName: string; dataUrl: string; base64: string; mimeType: string }> = [];
       for (let i = 0; i < queue.length; i++) {
-        compressed.push(await compressClothingImage(queue[i].file, 1024));
+        const compressed = await compressImageToDataUrl(queue[i].file, 640, 185_000);
+        prepared.push({ fileName: queue[i].file.name, ...compressed });
       }
 
-      // Send in smooth chunks of 4 so up to 50 items progress cleanly within serverless payload limits
-      const chunkSize = 4;
-      for (let start = 0; start < compressed.length; start += chunkSize) {
-        const chunk = compressed.slice(start, start + chunkSize);
-        setProgress({
-          done: start,
-          total,
-          stage: `Inspecting fabrics, fits & mapping image vectors (${Math.min(
-            start + chunk.length,
-            total
-          )} of ${total})...`,
-        });
+      // Analyze smoothly with bounded concurrency of 3 so up to 50 items complete reliably on Vercel & Cloud Run
+      let completed = 0;
+      const concurrency = 3;
+      let cursor = 0;
 
-        const formData = new FormData();
-        for (const file of chunk) {
-          formData.append('files', file);
+      const worker = async () => {
+        while (cursor < prepared.length) {
+          const idx = cursor++;
+          const item = prepared[idx];
+
+          setProgress({
+            done: completed,
+            total,
+            stage: `Inspecting fabrics, fits & mapping image vectors (${Math.min(completed + 1, total)} of ${total})...`,
+          });
+
+          const res = await fetch('/api/ai/analyze-garment', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              base64: item.base64,
+              mimeType: item.mimeType,
+              fileName: item.fileName,
+            }),
+          });
+
+          const data = (await res.json()) as {
+            analyzed?: Omit<
+              Garment,
+              'id' | 'imageUrl' | 'wearCount' | 'hasVector' | 'vectorSource' | 'modelUsed' | 'createdAt'
+            >;
+            vector?: number[];
+            vectorSource?: 'gemini-embedding-2' | 'semantic-fallback';
+            modelUsed?: string;
+            error?: string;
+          };
+
+          if (!res.ok || !data.analyzed) {
+            throw new Error(data.error || `Failed to inspect ${item.fileName}.`);
+          }
+
+          readyEntries.push({
+            garment: {
+              ...data.analyzed,
+              imageUrl: item.dataUrl,
+              wearCount: 0,
+              hasVector: true,
+              vectorSource: data.vectorSource ?? 'semantic-fallback',
+              modelUsed: data.modelUsed,
+            },
+            vector: data.vector ?? [],
+          });
+
+          completed += 1;
+          setProgress({
+            done: completed,
+            total,
+            stage: `Analyzed ${completed} of ${total} pieces`,
+          });
         }
+      };
 
-        const res = await fetch('/api/wardrobe/upload', {
-          method: 'POST',
-          body: formData,
-        });
+      await Promise.all(
+        Array.from({ length: Math.min(concurrency, prepared.length) }, () => worker())
+      );
 
-        const data = (await res.json()) as {
-          added?: unknown[];
-          bootstrap?: AppBootstrapData;
-          error?: string;
-        };
+      setProgress({
+        done: total,
+        total,
+        stage: 'Saving garments & vectors to your private cloud wardrobe...',
+      });
 
-        if (!res.ok) {
-          throw new Error(data.error || 'Failed to analyze uploaded garments.');
-        }
-
-        addedTotal += data.added?.length ?? chunk.length;
-        if (data.bootstrap) {
-          latestBootstrap = data.bootstrap;
-        }
-        setProgress({
-          done: Math.min(start + chunk.length, total),
-          total,
-          stage: 'Saved to wardrobe vector index',
-        });
+      // Persist in Firestore chunks of 25 (well within Firestore batch limits)
+      for (let start = 0; start < readyEntries.length; start += 25) {
+        await onSaveAnalyzedGarments(readyEntries.slice(start, start + 25));
       }
 
       clearQueue();
-      if (latestBootstrap) {
-        onUploadComplete(latestBootstrap, addedTotal);
-      }
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed. Please try again.');
@@ -187,10 +226,10 @@ export function BatchUploadModal({
         <div className="px-6 py-5 border-b border-black/[0.06] flex items-center justify-between gap-4">
           <div>
             <h2 className="text-[20px] font-semibold tracking-[-0.02em] text-[#1D1D1F]">
-              Add Clothes to Wardrobe
+              Add Clothes to Cloud Wardrobe
             </h2>
             <p className="mt-0.5 text-[13px] text-[#6E6E73]">
-              Upload up to {MAX_BATCH_UPLOAD_FILES} pieces at once. Each photo is analyzed for fabric, fit, color, and saved as an image vector.
+              Upload up to {MAX_BATCH_UPLOAD_FILES} pieces at once. Each photo is analyzed for fabric, fit, color, and saved privately to your cloud account.
             </p>
           </div>
           <button
@@ -242,7 +281,7 @@ export function BatchUploadModal({
               Drop clothing photos here, or browse from your device
             </p>
             <p className="mt-1 text-[13px] text-[#6E6E73]">
-              JPEG, PNG, WebP, or AVIF · Up to 50 items per batch · Auto-compressed for fast AI analysis
+              JPEG, PNG, WebP, or AVIF · Up to 50 items per batch · Synced privately to your account
             </p>
             <button
               type="button"
@@ -327,7 +366,7 @@ export function BatchUploadModal({
         {/* Modal Footer */}
         <div className="px-6 py-4 border-t border-black/[0.06] bg-[#FAFAFC] flex items-center justify-between gap-4">
           <p className="text-[12px] text-[#6E6E73]">
-            Hierarchical AI inspection + multimodal image vector storage
+            AI fabric inspection + image vectors saved to cloud
           </p>
           <div className="flex items-center gap-2.5 shrink-0">
             <button

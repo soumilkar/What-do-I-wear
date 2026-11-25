@@ -1,0 +1,405 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private styling profile, appearance metrics, and cached AI styling blueprint owned by an authenticated user.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "photoUrl": {
+          "type": "string",
+          "maxLength": 250000
+        },
+        "bio": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "height": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "bodyType": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "skinUndertone": {
+          "type": "string",
+          "enum": ["Warm", "Cool", "Neutral", "Olive"]
+        },
+        "preferredFits": {
+          "type": "array",
+          "description": "Up to 6 preferred garment fit styles."
+        },
+        "styleAesthetics": {
+          "type": "array",
+          "description": "Up to 6 personal style aesthetics."
+        },
+        "budgetRange": {
+          "type": "string",
+          "enum": ["Accessible", "Mid-Tier", "Contemporary", "Luxury"]
+        },
+        "climate": {
+          "type": "string",
+          "enum": ["Temperate", "Warm", "Cold", "Four-Season"]
+        },
+        "stylingGoals": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "blueprint": {
+          "type": "object",
+          "description": "Cached AI styling blueprint or null."
+        },
+        "seeded": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "name",
+        "photoUrl",
+        "bio",
+        "height",
+        "bodyType",
+        "skinUndertone",
+        "preferredFits",
+        "styleAesthetics",
+        "budgetRange",
+        "climate",
+        "stylingGoals",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Garment": {
+      "title": "Garment",
+      "description": "A single clothing item in a user's private cloud wardrobe with forensic AI fabric/fit metadata and multimodal image vector.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "category": {
+          "type": "string",
+          "enum": ["tops", "bottoms", "outerwear", "footwear", "accessories"]
+        },
+        "subCategory": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "imageUrl": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 250000
+        },
+        "primaryColor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "colorHex": {
+          "type": "string",
+          "minLength": 7,
+          "maxLength": 7,
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "secondaryColors": {
+          "type": "array",
+          "description": "Up to 5 secondary color labels."
+        },
+        "undertone": {
+          "type": "string",
+          "enum": ["Warm", "Cool", "Neutral"]
+        },
+        "fabric": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "fabricWeight": {
+          "type": "string",
+          "enum": ["Lightweight", "Midweight", "Heavyweight"]
+        },
+        "texture": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "fit": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "silhouette": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "pattern": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "formality": {
+          "type": "integer"
+        },
+        "seasons": {
+          "type": "array",
+          "description": "1 to 5 season tags."
+        },
+        "occasions": {
+          "type": "array",
+          "description": "1 to 6 occasion tags."
+        },
+        "stylingNotes": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "layeringRole": {
+          "type": "string",
+          "enum": ["Base", "Mid", "Outer", "Bottom", "Footwear", "Accent"]
+        },
+        "brand": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "wearCount": {
+          "type": "integer"
+        },
+        "hasVector": {
+          "type": "boolean"
+        },
+        "vectorSource": {
+          "type": "string",
+          "enum": ["gemini-embedding-2", "semantic-fallback"]
+        },
+        "vector": {
+          "type": "array",
+          "description": "Normalized numeric embedding vector up to 256 dimensions."
+        },
+        "modelUsed": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "name",
+        "category",
+        "subCategory",
+        "imageUrl",
+        "primaryColor",
+        "colorHex",
+        "secondaryColors",
+        "undertone",
+        "fabric",
+        "fabricWeight",
+        "texture",
+        "fit",
+        "silhouette",
+        "pattern",
+        "formality",
+        "seasons",
+        "occasions",
+        "stylingNotes",
+        "layeringRole",
+        "wearCount",
+        "hasVector",
+        "vectorSource",
+        "vector",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Outfit": {
+      "title": "Outfit",
+      "description": "An AI-ranked combination or user-saved custom Lookbook outfit owned by an authenticated user.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "source": {
+          "type": "string",
+          "enum": ["ai", "custom"]
+        },
+        "rank": {
+          "type": "integer"
+        },
+        "score": {
+          "type": "integer"
+        },
+        "vectorHarmonyScore": {
+          "type": "integer"
+        },
+        "itemIds": {
+          "type": "array",
+          "description": "2 to 10 garment document IDs."
+        },
+        "occasion": {
+          "type": "string",
+          "enum": ["Everyday", "Smart Casual", "Formal", "Evening", "Travel", "Streetwear"]
+        },
+        "season": {
+          "type": "string",
+          "enum": ["Spring", "Summer", "Autumn", "Winter", "All-Season"]
+        },
+        "rationale": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "fabricFitNotes": {
+          "type": "string",
+          "maxLength": 320
+        },
+        "bodyTailoringNote": {
+          "type": "string",
+          "maxLength": 320
+        },
+        "finishingTouch": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "wearCount": {
+          "type": "integer"
+        },
+        "saved": {
+          "type": "boolean"
+        },
+        "modelUsed": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "title",
+        "source",
+        "score",
+        "vectorHarmonyScore",
+        "itemIds",
+        "occasion",
+        "season",
+        "rationale",
+        "fabricFitNotes",
+        "bodyTailoringNote",
+        "finishingTouch",
+        "wearCount",
+        "saved",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdvisorMessage": {
+      "title": "AdvisorMessage",
+      "description": "Immutable chat turn in a user's private Shopping Advisor conversation.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "assistant"]
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "referencedItemIds": {
+          "type": "array",
+          "description": "Up to 6 referenced garment IDs."
+        },
+        "sources": {
+          "type": "array",
+          "description": "Up to 6 Google Search grounding source objects."
+        },
+        "modelUsed": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "role", "content", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private styling profile and cached AI blueprint for each authenticated user."
+    },
+    "/users/{userId}/garments/{garmentId}": {
+      "schema": { "$ref": "#/entities/Garment" },
+      "description": "User's private cloud wardrobe items with AI fabric/fit analysis and image vectors."
+    },
+    "/users/{userId}/combinations/{combinationId}": {
+      "schema": { "$ref": "#/entities/Outfit" },
+      "description": "User's latest AI-ranked outfit combination suggestions."
+    },
+    "/users/{userId}/savedOutfits/{outfitId}": {
+      "schema": { "$ref": "#/entities/Outfit" },
+      "description": "User's saved Lookbook and Studio custom outfits."
+    },
+    "/users/{userId}/advisorMessages/{messageId}": {
+      "schema": { "$ref": "#/entities/AdvisorMessage" },
+      "description": "User's private Shopping Advisor conversation history."
+    }
+  }
+}

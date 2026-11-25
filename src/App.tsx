@@ -3,39 +3,74 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { onAuthStateChanged, type User } from 'firebase/auth';
 import { useCallback, useEffect, useState } from 'react';
 import { AdvisorView } from './components/AdvisorView';
-import { BatchUploadModal } from './components/BatchUploadModal';
+import { AuthScreen } from './components/AuthScreen';
+import {
+  type AnalyzedCloudGarmentEntry,
+  BatchUploadModal,
+} from './components/BatchUploadModal';
 import { CombinationsView } from './components/CombinationsView';
 import { GarmentInspector } from './components/GarmentInspector';
 import { ProfileView } from './components/ProfileView';
 import { StudioView } from './components/StudioView';
 import { AppTab, TopNav } from './components/TopNav';
 import { WardrobeView } from './components/WardrobeView';
+import {
+  addAdvisorTurnToCloud,
+  addGarmentsToCloud,
+  clearAdvisorHistoryInCloud,
+  type CloudWorkspaceState,
+  deleteGarmentFromCloud,
+  deleteSavedOutfitFromCloud,
+  ensureUserWorkspaceSeeded,
+  logOutfitWearInCloud,
+  reanalyzeGarmentInCloud,
+  replaceRankedCombinationsInCloud,
+  saveOutfitToCloud,
+  subscribeUserWorkspace,
+  updateGarmentInCloud,
+  updateProfileBlueprintInCloud,
+  updateProfileInCloud,
+  updateProfilePhotoInCloud,
+} from './lib/cloudWardrobe';
+import { auth, signOutUser } from './lib/firebase';
 import type {
-  AppBootstrapData,
+  AIProfileBlueprint,
   Garment,
+  GroundingSource,
   OccasionType,
   OutfitCombination,
   SeasonTag,
   UserProfile,
 } from './types/styling';
+import { compressImageToDataUrl } from './utils/imageCompress';
 
 async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
     ...init,
   });
-  const data = (await res.json()) as T & { error?: string };
-  if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`);
+  const text = await res.text();
+  let parsed: (T & { error?: string }) | null = null;
+  try {
+    parsed = JSON.parse(text) as T & { error?: string };
+  } catch {
+    throw new Error(`Server returned an unexpected response (${res.status}).`);
   }
-  return data;
+  if (!res.ok) {
+    throw new Error(parsed?.error || `Request failed (${res.status})`);
+  }
+  return parsed;
 }
 
 export default function App() {
-  const [data, setData] = useState<AppBootstrapData | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [workspace, setWorkspace] = useState<CloudWorkspaceState | null>(null);
+  const [syncError, setSyncError] = useState<Error | null>(null);
+
   const [activeTab, setActiveTab] = useState<AppTab>('wardrobe');
   const [uploadOpen, setUploadOpen] = useState(false);
   const [inspectedGarmentId, setInspectedGarmentId] = useState<string | null>(null);
@@ -44,6 +79,11 @@ export default function App() {
   const [advisorPrefill, setAdvisorPrefill] = useState<string>('');
   const [toast, setToast] = useState<string | null>(null);
 
+  // Propagate fatal Firestore permission/quota errors cleanly to ErrorBoundary
+  if (syncError) {
+    throw syncError;
+  }
+
   const showToast = useCallback((msg: string) => {
     setToast(msg);
     setTimeout(() => {
@@ -51,51 +91,136 @@ export default function App() {
     }, 3200);
   }, []);
 
-  const loadBootstrap = useCallback(async () => {
-    try {
-      const payload = await apiJson<AppBootstrapData>('/api/bootstrap');
-      setData(payload);
-      setLoadError(null);
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Unable to load studio data.');
-    }
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (nextUser) => {
+      setUser(nextUser);
+      setAuthReady(true);
+      if (!nextUser) {
+        setWorkspace(null);
+        setInspectedGarmentId(null);
+        setUploadOpen(false);
+      }
+    });
+    return unsub;
   }, []);
 
   useEffect(() => {
-    void loadBootstrap();
-  }, [loadBootstrap]);
+    if (!authReady || !user) return;
+    let active = true;
+    let unsubscribe: (() => void) | null = null;
+
+    const bootCloudWorkspace = async () => {
+      try {
+        await ensureUserWorkspaceSeeded(user);
+        if (!active) return;
+        unsubscribe = subscribeUserWorkspace(
+          user.uid,
+          (state) => {
+            if (active) setWorkspace(state);
+          },
+          (err) => {
+            if (active) setSyncError(err);
+          }
+        );
+      } catch (err) {
+        if (active) {
+          setSyncError(err instanceof Error ? err : new Error(String(err)));
+        }
+      }
+    };
+
+    void bootCloudWorkspace();
+
+    return () => {
+      active = false;
+      if (unsubscribe) unsubscribe();
+    };
+  }, [authReady, user]);
+
+  if (!authReady) {
+    return (
+      <div className="min-h-screen bg-[#F5F5F7] flex items-center justify-center">
+        <div className="text-center space-y-2 animate-pulse">
+          <p className="font-display text-[20px] font-semibold tracking-[-0.025em] text-[#1D1D1F]">
+            What do I Wear?
+          </p>
+          <p className="text-[13px] text-[#6E6E73]">Connecting to your cloud wardrobe...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthScreen />;
+  }
+
+  const data = workspace?.bootstrap ?? null;
+  const vectors = workspace?.vectors ?? {};
 
   const inspectedGarment: Garment | null =
     data?.garments.find((g) => g.id === inspectedGarmentId) ?? null;
 
+  const handleSaveAnalyzedGarments = async (entries: AnalyzedCloudGarmentEntry[]) => {
+    await addGarmentsToCloud(user.uid, entries);
+    setActiveTab('wardrobe');
+    showToast(
+      `Saved ${entries.length} new ${entries.length === 1 ? 'piece' : 'pieces'} to your cloud wardrobe.`
+    );
+  };
+
   const handleUpdateGarment = async (id: string, patch: Partial<Garment>) => {
-    const res = await apiJson<{ bootstrap: AppBootstrapData }>(`/api/wardrobe/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify(patch),
-    });
-    setData(res.bootstrap);
-    showToast('Garment details updated.');
+    const current = data?.garments.find((g) => g.id === id);
+    if (!current) return;
+    await updateGarmentInCloud(user.uid, current, patch);
+    showToast('Garment details synced to cloud.');
   };
 
   const handleReanalyzeGarment = async (id: string) => {
+    const current = data?.garments.find((g) => g.id === id);
+    if (!current) return;
     try {
-      const res = await apiJson<{ bootstrap: AppBootstrapData }>(
-        `/api/wardrobe/${id}/reanalyze`,
-        { method: 'POST' }
+      const payload: Record<string, string> = { fileName: current.name };
+      if (current.imageUrl.startsWith('data:')) {
+        const m = current.imageUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+        if (m) {
+          payload.mimeType = m[1];
+          payload.base64 = m[2];
+        }
+      } else {
+        payload.imageUrl = current.imageUrl;
+      }
+
+      const res = await apiJson<{
+        analyzed: Omit<
+          Garment,
+          'id' | 'imageUrl' | 'wearCount' | 'hasVector' | 'vectorSource' | 'modelUsed' | 'createdAt'
+        >;
+        vector: number[];
+        vectorSource: 'gemini-embedding-2' | 'semantic-fallback';
+        modelUsed: string;
+      }>('/api/ai/analyze-garment', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+
+      await reanalyzeGarmentInCloud(
+        user.uid,
+        id,
+        res.analyzed,
+        res.vector,
+        res.vectorSource,
+        res.modelUsed
       );
-      setData(res.bootstrap);
-      showToast('Re-inspected garment and refreshed server image vector.');
+      showToast('Re-inspected garment and refreshed cloud image vector.');
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Re-analysis failed.');
     }
   };
 
   const handleDeleteGarment = async (id: string) => {
-    const res = await apiJson<{ bootstrap: AppBootstrapData }>(`/api/wardrobe/${id}`, {
-      method: 'DELETE',
-    });
-    setData(res.bootstrap);
-    showToast('Removed garment from wardrobe.');
+    if (!data) return;
+    await deleteGarmentFromCloud(user.uid, id, data.rankedCombinations, data.savedOutfits);
+    showToast('Removed garment from cloud wardrobe.');
   };
 
   const handleGenerateRankings = async (opts: {
@@ -103,24 +228,49 @@ export default function App() {
     season: SeasonTag;
     anchorItemId?: string;
   }) => {
-    const res = await apiJson<{ bootstrap: AppBootstrapData }>('/api/combinations/rank', {
-      method: 'POST',
-      body: JSON.stringify(opts),
-    });
-    setData(res.bootstrap);
+    if (!data) return;
+    const res = await apiJson<{ combinations: OutfitCombination[]; modelUsed: string }>(
+      '/api/ai/rank-combinations',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          garments: data.garments,
+          vectors,
+          profile: data.profile,
+          ...opts,
+        }),
+      }
+    );
+
+    await replaceRankedCombinationsInCloud(
+      user.uid,
+      data.rankedCombinations.map((c) => c.id),
+      res.combinations
+    );
     showToast('Ranked fresh personalized combinations.');
   };
 
   const handleSaveOutfit = async (payload: Partial<OutfitCombination>) => {
-    const res = await apiJson<{ bootstrap: AppBootstrapData }>('/api/outfits', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    setData(res.bootstrap);
-    showToast('Saved to your Lookbook.');
+    if (!data) return;
+    await saveOutfitToCloud(
+      user.uid,
+      payload,
+      data.garments,
+      vectors,
+      data.profile,
+      data.savedOutfits.length,
+      data.rankedCombinations
+    );
+    showToast('Saved to your cloud Lookbook.');
   };
 
   const handleCritiqueOutfit = async (itemIds: string[], occasion: OccasionType) => {
+    if (!data) {
+      throw new Error('Wardrobe is still loading.');
+    }
+    const items = itemIds
+      .map((id) => data.garments.find((g) => g.id === id))
+      .filter((g): g is Garment => Boolean(g));
     return apiJson<{
       score: number;
       rationale: string;
@@ -128,75 +278,97 @@ export default function App() {
       bodyTailoringNote: string;
       finishingTouch: string;
       modelUsed: string;
-    }>('/api/outfits/critique', {
+    }>('/api/ai/critique-outfit', {
       method: 'POST',
-      body: JSON.stringify({ itemIds, occasion }),
+      body: JSON.stringify({ items, profile: data.profile, occasion }),
     });
   };
 
   const handleLogWear = async (outfitId: string) => {
-    const res = await apiJson<{ bootstrap: AppBootstrapData }>(
-      `/api/outfits/${outfitId}/wear`,
-      { method: 'POST' }
-    );
-    setData(res.bootstrap);
+    if (!data) return;
+    const outfit = data.savedOutfits.find((o) => o.id === outfitId);
+    if (!outfit) return;
+    await logOutfitWearInCloud(user.uid, outfit, data.garments);
     showToast('Logged as worn today.');
   };
 
   const handleDeleteOutfit = async (outfitId: string) => {
-    const res = await apiJson<{ bootstrap: AppBootstrapData }>(
-      `/api/outfits/${outfitId}`,
-      { method: 'DELETE' }
-    );
-    setData(res.bootstrap);
+    await deleteSavedOutfitFromCloud(user.uid, outfitId);
     showToast('Removed from Lookbook.');
   };
 
   const handleSaveProfile = async (patch: Partial<UserProfile>) => {
-    const res = await apiJson<{ bootstrap: AppBootstrapData }>('/api/profile', {
-      method: 'PUT',
-      body: JSON.stringify(patch),
-    });
-    setData(res.bootstrap);
+    await updateProfileInCloud(user.uid, patch);
   };
 
   const handleUploadProfilePhoto = async (file: File) => {
-    const formData = new FormData();
-    formData.append('photo', file);
-    const res = await fetch('/api/profile/photo', {
-      method: 'POST',
-      body: formData,
-    });
-    const json = (await res.json()) as { bootstrap?: AppBootstrapData; error?: string };
-    if (!res.ok || !json.bootstrap) {
-      throw new Error(json.error || 'Failed to upload portrait.');
-    }
-    setData(json.bootstrap);
-    showToast('Portrait updated.');
+    const compressed = await compressImageToDataUrl(file, 560, 185_000);
+    await updateProfilePhotoInCloud(user.uid, compressed.dataUrl);
+    showToast('Portrait synced to cloud.');
   };
 
   const handleAnalyzeBlueprint = async () => {
-    const res = await apiJson<{ bootstrap: AppBootstrapData }>('/api/profile/analyze', {
-      method: 'POST',
-    });
-    setData(res.bootstrap);
-    showToast('Personal Styling Blueprint updated.');
+    if (!data) return;
+    let photoBase64: string | null = null;
+    let photoMimeType: string | null = null;
+    if (data.profile.photoUrl.startsWith('data:')) {
+      const m = data.profile.photoUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+      if (m) {
+        photoMimeType = m[1];
+        photoBase64 = m[2];
+      }
+    }
+
+    const res = await apiJson<{ blueprint: AIProfileBlueprint; modelUsed: string }>(
+      '/api/ai/analyze-profile',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          profile: data.profile,
+          photoBase64,
+          photoMimeType,
+        }),
+      }
+    );
+
+    await updateProfileBlueprintInCloud(user.uid, res.blueprint);
+    showToast('Personal Styling Blueprint saved to cloud.');
   };
 
   const handleSendAdvisorMessage = async (message: string) => {
-    const res = await apiJson<{ bootstrap: AppBootstrapData }>('/api/advisor/chat', {
+    if (!data) return;
+    const reply = await apiJson<{
+      content: string;
+      referencedItemIds?: string[];
+      sources?: GroundingSource[];
+      modelUsed?: string;
+    }>('/api/ai/advisor-chat', {
       method: 'POST',
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({
+        message,
+        history: data.advisorMessages,
+        garments: data.garments,
+        savedOutfits: data.savedOutfits,
+        profile: data.profile,
+      }),
     });
-    setData(res.bootstrap);
+
+    await addAdvisorTurnToCloud(user.uid, message, reply);
   };
 
   const handleClearAdvisorHistory = async () => {
-    const res = await apiJson<{ bootstrap: AppBootstrapData }>('/api/advisor/history', {
-      method: 'DELETE',
-    });
-    setData(res.bootstrap);
+    if (!data) return;
+    await clearAdvisorHistoryInCloud(
+      user.uid,
+      data.advisorMessages.map((m) => m.id),
+      data.profile.name,
+      data.garments.length
+    );
     showToast('Started a fresh advisor thread.');
+  };
+
+  const handleSignOut = async () => {
+    await signOutUser();
   };
 
   return (
@@ -208,23 +380,15 @@ export default function App() {
           window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
         }}
         onOpenUpload={() => setUploadOpen(true)}
+        userEmail={user.email}
+        userName={data?.profile.name || user.displayName}
+        userPhotoUrl={data?.profile.photoUrl || user.photoURL}
+        onSignOut={() => void handleSignOut()}
       />
 
       <main className="flex-1 max-w-[1280px] w-full mx-auto px-5 sm:px-8 pt-8 pb-24 md:pb-16">
-        {loadError ? (
-          <div className="surface-card rounded-3xl p-10 max-w-lg mx-auto text-center space-y-4">
-            <h1 className="text-[22px] font-semibold">Unable to connect to styling server</h1>
-            <p className="text-[14px] text-[#6E6E73]">{loadError}</p>
-            <button
-              type="button"
-              onClick={() => void loadBootstrap()}
-              className="px-5 py-2.5 rounded-full bg-[#1D1D1F] text-white text-[13px] font-medium"
-            >
-              Retry
-            </button>
-          </div>
-        ) : !data ? (
-          <div className="space-y-8 animate-pulse" aria-busy="true" aria-label="Loading wardrobe">
+        {!data ? (
+          <div className="space-y-8 animate-pulse" aria-busy="true" aria-label="Loading cloud wardrobe">
             <div className="h-12 w-80 bg-black/[0.06] rounded-2xl" />
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-7">
               {[1, 2, 3].map((n) => (
@@ -305,7 +469,7 @@ export default function App() {
       <footer className="hidden md:block border-t border-black/[0.06] py-6">
         <div className="max-w-[1280px] mx-auto px-8 flex items-center justify-between text-[12px] text-[#86868B]">
           <span>What do I Wear?</span>
-          <span>Personal Wardrobe Archive & Styling Studio</span>
+          <span>Private Cloud Wardrobe Archive & Styling Studio</span>
         </div>
       </footer>
 
@@ -329,13 +493,7 @@ export default function App() {
       <BatchUploadModal
         open={uploadOpen}
         onClose={() => setUploadOpen(false)}
-        onUploadComplete={(bootstrap, count) => {
-          setData(bootstrap);
-          setActiveTab('wardrobe');
-          showToast(
-            `Indexed ${count} new ${count === 1 ? 'piece' : 'pieces'} with image vectors.`
-          );
-        }}
+        onSaveAnalyzedGarments={handleSaveAnalyzedGarments}
       />
 
       {toast && (

@@ -1,4 +1,4 @@
-import { Plus } from 'lucide-react';
+import { LogOut, Plus } from 'lucide-react';
 
 export type AppTab = 'wardrobe' | 'combinations' | 'studio' | 'advisor' | 'profile';
 
@@ -6,6 +6,10 @@ interface TopNavProps {
   activeTab: AppTab;
   onSelectTab: (tab: AppTab) => void;
   onOpenUpload: () => void;
+  userEmail?: string | null;
+  userName?: string | null;
+  userPhotoUrl?: string | null;
+  onSignOut: () => void;
 }
 
 const NAV_ITEMS: Array<{ id: AppTab; label: string }> = [
@@ -16,11 +20,21 @@ const NAV_ITEMS: Array<{ id: AppTab; label: string }> = [
   { id: 'profile', label: 'Profile' },
 ];
 
-export function TopNav({ activeTab, onSelectTab, onOpenUpload }: TopNavProps) {
+export function TopNav({
+  activeTab,
+  onSelectTab,
+  onOpenUpload,
+  userEmail,
+  userName,
+  userPhotoUrl,
+  onSignOut,
+}: TopNavProps) {
+  const initial = (userName || userEmail || 'U').trim().charAt(0).toUpperCase();
+
   return (
     <>
       <header className="sticky top-0 z-40 apple-glass border-b border-black/[0.06]">
-        <div className="max-w-[1280px] mx-auto px-5 sm:px-8 h-16 flex items-center justify-between gap-8">
+        <div className="max-w-[1280px] mx-auto px-5 sm:px-8 h-16 flex items-center justify-between gap-6">
           {/* Zone 1: Single clean wordmark */}
           <button
             type="button"
@@ -61,8 +75,8 @@ export function TopNav({ activeTab, onSelectTab, onOpenUpload }: TopNavProps) {
             })}
           </nav>
 
-          {/* Zone 3: 1 primary action */}
-          <div className="flex items-center shrink-0">
+          {/* Zone 3: Primary action + clean account controls */}
+          <div className="flex items-center gap-2.5 shrink-0">
             <button
               type="button"
               onClick={onOpenUpload}
@@ -71,11 +85,40 @@ export function TopNav({ activeTab, onSelectTab, onOpenUpload }: TopNavProps) {
               <Plus className="w-3.5 h-3.5" aria-hidden="true" />
               Add Clothes
             </button>
+
+            <button
+              type="button"
+              onClick={() => onSelectTab('profile')}
+              title={userName || userEmail || 'Account'}
+              aria-label="Open personal style profile"
+              className="hidden sm:flex w-8 h-8 rounded-full overflow-hidden bg-black/[0.07] items-center justify-center text-[12px] font-semibold text-[#1D1D1F] hover:ring-2 hover:ring-black/15 transition-all shrink-0"
+            >
+              {userPhotoUrl ? (
+                <img
+                  src={userPhotoUrl}
+                  alt={userName || 'Account avatar'}
+                  referrerPolicy="no-referrer"
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                initial
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={onSignOut}
+              title="Sign out"
+              aria-label="Sign out"
+              className="w-8 h-8 rounded-full bg-black/[0.04] hover:bg-black/[0.09] flex items-center justify-center text-[#6E6E73] hover:text-[#1D1D1F] transition-colors shrink-0"
+            >
+              <LogOut className="w-3.5 h-3.5" aria-hidden="true" />
+            </button>
           </div>
         </div>
       </header>
 
-      {/* Mobile bottom tab bar — compact height (<= 8% of mobile viewport) */}
+      {/* Mobile bottom tab bar — compact height */}
       <nav
         aria-label="Mobile navigation"
         className="md:hidden fixed bottom-0 inset-x-0 z-40 apple-glass border-t border-black/[0.08] px-2 py-1.5 flex items-center justify-around"

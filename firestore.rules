@@ -1,0 +1,567 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Global Hardened Primitives ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isVerifiedOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function hasUserParent(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId));
+    }
+
+    function isStringBounded(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isStringListBounded(arr, minLen, maxLen) {
+      return arr is list &&
+        arr.size() >= minLen &&
+        arr.size() <= maxLen &&
+        (arr.size() == 0 || arr[0] is string);
+    }
+
+    function isNumberListBounded(arr, maxLen) {
+      return arr is list &&
+        arr.size() <= maxLen &&
+        (arr.size() == 0 || arr[0] is number);
+    }
+
+    function isValidBlueprint(bp) {
+      return bp == null || (
+        bp is map &&
+        bp.keys().hasAll([
+          'summary',
+          'colorSeason',
+          'contrastLevel',
+          'bestColors',
+          'avoidColors',
+          'idealSilhouettes',
+          'proportionTips',
+          'recommendedFabrics',
+          'analyzedAt'
+        ]) &&
+        bp.keys().hasOnly([
+          'summary',
+          'colorSeason',
+          'contrastLevel',
+          'bestColors',
+          'avoidColors',
+          'idealSilhouettes',
+          'proportionTips',
+          'recommendedFabrics',
+          'analyzedAt',
+          'modelUsed'
+        ]) &&
+        isStringBounded(bp.summary, 1, 600) &&
+        isStringBounded(bp.colorSeason, 1, 80) &&
+        isStringBounded(bp.contrastLevel, 1, 40) &&
+        isStringListBounded(bp.bestColors, 0, 8) &&
+        isStringListBounded(bp.avoidColors, 0, 6) &&
+        isStringListBounded(bp.idealSilhouettes, 0, 6) &&
+        isStringListBounded(bp.proportionTips, 0, 6) &&
+        isStringListBounded(bp.recommendedFabrics, 0, 8) &&
+        isStringBounded(bp.analyzedAt, 1, 64) &&
+        (!('modelUsed' in bp) || isStringBounded(bp.modelUsed, 0, 100))
+      );
+    }
+
+    // --- Validation Blueprints (Anti-Update-Gap) ---
+    function isValidUserProfile(data) {
+      return data.keys().hasAll([
+        'ownerId',
+        'name',
+        'photoUrl',
+        'bio',
+        'height',
+        'bodyType',
+        'skinUndertone',
+        'preferredFits',
+        'styleAesthetics',
+        'budgetRange',
+        'climate',
+        'stylingGoals',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId',
+        'name',
+        'photoUrl',
+        'bio',
+        'height',
+        'bodyType',
+        'skinUndertone',
+        'preferredFits',
+        'styleAesthetics',
+        'budgetRange',
+        'climate',
+        'stylingGoals',
+        'blueprint',
+        'seeded',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      isValidId(data.ownerId) &&
+      data.ownerId == request.auth.uid &&
+      isStringBounded(data.name, 0, 80) &&
+      isStringBounded(data.photoUrl, 0, 250000) &&
+      isStringBounded(data.bio, 0, 600) &&
+      isStringBounded(data.height, 0, 40) &&
+      isStringBounded(data.bodyType, 0, 60) &&
+      data.skinUndertone in ['Warm', 'Cool', 'Neutral', 'Olive'] &&
+      isStringListBounded(data.preferredFits, 0, 6) &&
+      isStringListBounded(data.styleAesthetics, 0, 6) &&
+      data.budgetRange in ['Accessible', 'Mid-Tier', 'Contemporary', 'Luxury'] &&
+      data.climate in ['Temperate', 'Warm', 'Cold', 'Four-Season'] &&
+      isStringBounded(data.stylingGoals, 0, 300) &&
+      (!('blueprint' in data) || isValidBlueprint(data.blueprint)) &&
+      (!('seeded' in data) || data.seeded is bool) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidGarment(data) {
+      return data.keys().hasAll([
+        'ownerId',
+        'name',
+        'category',
+        'subCategory',
+        'imageUrl',
+        'primaryColor',
+        'colorHex',
+        'secondaryColors',
+        'undertone',
+        'fabric',
+        'fabricWeight',
+        'texture',
+        'fit',
+        'silhouette',
+        'pattern',
+        'formality',
+        'seasons',
+        'occasions',
+        'stylingNotes',
+        'layeringRole',
+        'wearCount',
+        'hasVector',
+        'vectorSource',
+        'vector',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId',
+        'name',
+        'category',
+        'subCategory',
+        'imageUrl',
+        'primaryColor',
+        'colorHex',
+        'secondaryColors',
+        'undertone',
+        'fabric',
+        'fabricWeight',
+        'texture',
+        'fit',
+        'silhouette',
+        'pattern',
+        'formality',
+        'seasons',
+        'occasions',
+        'stylingNotes',
+        'layeringRole',
+        'brand',
+        'wearCount',
+        'hasVector',
+        'vectorSource',
+        'vector',
+        'modelUsed',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      isValidId(data.ownerId) &&
+      data.ownerId == request.auth.uid &&
+      isStringBounded(data.name, 1, 100) &&
+      data.category in ['tops', 'bottoms', 'outerwear', 'footwear', 'accessories'] &&
+      isStringBounded(data.subCategory, 1, 80) &&
+      isStringBounded(data.imageUrl, 1, 250000) &&
+      isStringBounded(data.primaryColor, 1, 60) &&
+      data.colorHex is string && data.colorHex.size() == 7 && data.colorHex.matches('^#[0-9A-Fa-f]{6}$') &&
+      isStringListBounded(data.secondaryColors, 0, 5) &&
+      data.undertone in ['Warm', 'Cool', 'Neutral'] &&
+      isStringBounded(data.fabric, 1, 140) &&
+      data.fabricWeight in ['Lightweight', 'Midweight', 'Heavyweight'] &&
+      isStringBounded(data.texture, 1, 80) &&
+      isStringBounded(data.fit, 1, 80) &&
+      isStringBounded(data.silhouette, 1, 120) &&
+      isStringBounded(data.pattern, 1, 60) &&
+      data.formality is int && data.formality >= 1 && data.formality <= 10 &&
+      isStringListBounded(data.seasons, 1, 5) &&
+      isStringListBounded(data.occasions, 1, 6) &&
+      isStringBounded(data.stylingNotes, 0, 300) &&
+      data.layeringRole in ['Base', 'Mid', 'Outer', 'Bottom', 'Footwear', 'Accent'] &&
+      (!('brand' in data) || isStringBounded(data.brand, 0, 80)) &&
+      data.wearCount is int && data.wearCount >= 0 && data.wearCount <= 10000 &&
+      data.hasVector is bool &&
+      data.vectorSource in ['gemini-embedding-2', 'semantic-fallback'] &&
+      isNumberListBounded(data.vector, 256) &&
+      (!('modelUsed' in data) || isStringBounded(data.modelUsed, 0, 100)) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidOutfit(data) {
+      return data.keys().hasAll([
+        'ownerId',
+        'title',
+        'source',
+        'score',
+        'vectorHarmonyScore',
+        'itemIds',
+        'occasion',
+        'season',
+        'rationale',
+        'fabricFitNotes',
+        'bodyTailoringNote',
+        'finishingTouch',
+        'wearCount',
+        'saved',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId',
+        'title',
+        'source',
+        'rank',
+        'score',
+        'vectorHarmonyScore',
+        'itemIds',
+        'occasion',
+        'season',
+        'rationale',
+        'fabricFitNotes',
+        'bodyTailoringNote',
+        'finishingTouch',
+        'wearCount',
+        'saved',
+        'modelUsed',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      isValidId(data.ownerId) &&
+      data.ownerId == request.auth.uid &&
+      isStringBounded(data.title, 1, 100) &&
+      data.source in ['ai', 'custom'] &&
+      (!('rank' in data) || (data.rank is int && data.rank >= 1 && data.rank <= 50)) &&
+      data.score is int && data.score >= 0 && data.score <= 100 &&
+      data.vectorHarmonyScore is int && data.vectorHarmonyScore >= 0 && data.vectorHarmonyScore <= 100 &&
+      isStringListBounded(data.itemIds, 2, 10) &&
+      data.occasion in ['Everyday', 'Smart Casual', 'Formal', 'Evening', 'Travel', 'Streetwear'] &&
+      data.season in ['Spring', 'Summer', 'Autumn', 'Winter', 'All-Season'] &&
+      isStringBounded(data.rationale, 0, 400) &&
+      isStringBounded(data.fabricFitNotes, 0, 320) &&
+      isStringBounded(data.bodyTailoringNote, 0, 320) &&
+      isStringBounded(data.finishingTouch, 0, 240) &&
+      data.wearCount is int && data.wearCount >= 0 && data.wearCount <= 10000 &&
+      data.saved is bool &&
+      (!('modelUsed' in data) || isStringBounded(data.modelUsed, 0, 100)) &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidAdvisorMessage(data) {
+      return data.keys().hasAll([
+        'ownerId',
+        'role',
+        'content',
+        'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'ownerId',
+        'role',
+        'content',
+        'referencedItemIds',
+        'sources',
+        'modelUsed',
+        'createdAt'
+      ]) &&
+      isValidId(data.ownerId) &&
+      data.ownerId == request.auth.uid &&
+      data.role in ['user', 'assistant'] &&
+      isStringBounded(data.content, 1, 4000) &&
+      (!('referencedItemIds' in data) || isStringListBounded(data.referencedItemIds, 0, 6)) &&
+      (!('sources' in data) || (data.sources is list && data.sources.size() <= 6 && (data.sources.size() == 0 || data.sources[0] is map))) &&
+      (!('modelUsed' in data) || isStringBounded(data.modelUsed, 0, 100)) &&
+      data.createdAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+    match /users/{userId} {
+      // PII Isolation: never allow listing user documents
+      allow list: if false;
+
+      allow get: if isVerifiedOwner(userId) &&
+        isValidId(userId) &&
+        (resource == null || existing().ownerId == request.auth.uid);
+
+      allow create: if isVerifiedOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedOwner(userId) &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Action: Edit profile preferences
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name',
+            'bio',
+            'height',
+            'bodyType',
+            'skinUndertone',
+            'preferredFits',
+            'styleAesthetics',
+            'budgetRange',
+            'climate',
+            'stylingGoals',
+            'updatedAt'
+          ]) ||
+          // Action: Update portrait photo
+          incoming().diff(existing()).affectedKeys().hasOnly(['photoUrl', 'updatedAt']) ||
+          // Action: Update AI styling blueprint
+          incoming().diff(existing()).affectedKeys().hasOnly(['blueprint', 'updatedAt']) ||
+          // Action: Mark initial seed complete
+          incoming().diff(existing()).affectedKeys().hasOnly(['seeded', 'updatedAt'])
+        );
+
+      allow delete: if isVerifiedOwner(userId) &&
+        isValidId(userId) &&
+        existing().ownerId == request.auth.uid;
+
+      // Subcollection: Private Cloud Wardrobe Garments
+      match /garments/{garmentId} {
+        allow list: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          resource.data.ownerId == request.auth.uid;
+
+        allow get: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(garmentId) &&
+          existing().ownerId == request.auth.uid;
+
+        allow create: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(garmentId) &&
+          isValidGarment(incoming()) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          hasUserParent(userId);
+
+        allow update: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(garmentId) &&
+          isValidGarment(incoming()) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          hasUserParent(userId) && (
+            // Action: Manual garment metadata edit
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'category',
+              'fabric',
+              'fit',
+              'primaryColor',
+              'pattern',
+              'formality',
+              'stylingNotes',
+              'vector',
+              'updatedAt'
+            ]) ||
+            // Action: AI forensic re-analysis & vector refresh
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'category',
+              'subCategory',
+              'primaryColor',
+              'colorHex',
+              'secondaryColors',
+              'undertone',
+              'fabric',
+              'fabricWeight',
+              'texture',
+              'fit',
+              'silhouette',
+              'pattern',
+              'formality',
+              'seasons',
+              'occasions',
+              'stylingNotes',
+              'layeringRole',
+              'hasVector',
+              'vectorSource',
+              'vector',
+              'modelUsed',
+              'updatedAt'
+            ]) ||
+            // Action: Log garment worn (+1)
+            (incoming().diff(existing()).affectedKeys().hasOnly(['wearCount', 'updatedAt']) &&
+              incoming().wearCount == existing().wearCount + 1)
+          );
+
+        allow delete: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(garmentId) &&
+          existing().ownerId == request.auth.uid &&
+          hasUserParent(userId);
+      }
+
+      // Subcollection: AI-Ranked Outfit Combinations
+      match /combinations/{combinationId} {
+        allow list: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          resource.data.ownerId == request.auth.uid;
+
+        allow get: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(combinationId) &&
+          existing().ownerId == request.auth.uid;
+
+        allow create: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(combinationId) &&
+          isValidOutfit(incoming()) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          hasUserParent(userId);
+
+        allow update: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(combinationId) &&
+          isValidOutfit(incoming()) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          hasUserParent(userId) && (
+            // Action: Mark combination saved to Lookbook
+            incoming().diff(existing()).affectedKeys().hasOnly(['saved', 'updatedAt'])
+          );
+
+        allow delete: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(combinationId) &&
+          existing().ownerId == request.auth.uid &&
+          hasUserParent(userId);
+      }
+
+      // Subcollection: Saved Lookbook & Custom Studio Outfits
+      match /savedOutfits/{outfitId} {
+        allow list: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          resource.data.ownerId == request.auth.uid;
+
+        allow get: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(outfitId) &&
+          existing().ownerId == request.auth.uid;
+
+        allow create: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(outfitId) &&
+          isValidOutfit(incoming()) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          hasUserParent(userId);
+
+        allow update: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(outfitId) &&
+          isValidOutfit(incoming()) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          hasUserParent(userId) && (
+            // Action: Log outfit worn today (+1)
+            (incoming().diff(existing()).affectedKeys().hasOnly(['wearCount', 'updatedAt']) &&
+              incoming().wearCount == existing().wearCount + 1) ||
+            // Action: Edit outfit title or styling notes
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title',
+              'occasion',
+              'season',
+              'rationale',
+              'fabricFitNotes',
+              'bodyTailoringNote',
+              'finishingTouch',
+              'updatedAt'
+            ])
+          );
+
+        allow delete: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(outfitId) &&
+          existing().ownerId == request.auth.uid &&
+          hasUserParent(userId);
+      }
+
+      // Subcollection: Shopping Advisor Chat History (immutable turns)
+      match /advisorMessages/{messageId} {
+        allow list: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          resource.data.ownerId == request.auth.uid;
+
+        allow get: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(messageId) &&
+          existing().ownerId == request.auth.uid;
+
+        allow create: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(messageId) &&
+          isValidAdvisorMessage(incoming()) &&
+          incoming().createdAt == request.time &&
+          hasUserParent(userId);
+
+        allow update: if false;
+
+        allow delete: if isVerifiedOwner(userId) &&
+          isValidId(userId) &&
+          isValidId(messageId) &&
+          existing().ownerId == request.auth.uid &&
+          hasUserParent(userId);
+      }
+    }
+  }
+}

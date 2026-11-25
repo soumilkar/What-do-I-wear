@@ -575,12 +575,15 @@ export async function generateGarmentVector(
       const result = await ai.models.embedContent({
         model: attempt.model,
         contents: attempt.contents,
+        config: {
+          outputDimensionality: 128,
+        },
       });
 
       const values = result.embeddings?.[0]?.values;
       if (Array.isArray(values) && values.length > 0) {
         return {
-          vector: normalizeVector(values),
+          vector: normalizeVector(values.slice(0, 256)),
           source: 'gemini-embedding-2',
         };
       }
