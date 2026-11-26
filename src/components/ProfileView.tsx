@@ -1,25 +1,22 @@
 import { useEffect, useRef, useState } from 'react';
 import { Camera, Check, Sparkles } from 'lucide-react';
-import type { UserProfile } from '../types/styling';
+import {
+  STYLE_AESTHETIC_OPTIONS,
+  STYLE_FIT_OPTIONS,
+  type UserProfile,
+} from '../types/styling';
 import { compressClothingImage } from '../utils/imageCompress';
 import { SmartImage } from './SmartImage';
 
 interface ProfileViewProps {
   profile: UserProfile;
   onSaveProfile: (patch: Partial<UserProfile>) => Promise<void>;
-  onUploadPhoto: (file: File) => Promise<void>;
-  onAnalyzeBlueprint: () => Promise<void>;
+  onUploadPhoto: (file: File, currentForm: UserProfile) => Promise<void>;
+  onAnalyzeBlueprint: (currentForm: UserProfile) => Promise<void>;
 }
 
-const FIT_OPTIONS = ['Tailored', 'Relaxed', 'Structured', 'Oversized', 'Slim', 'Cropped'];
-const AESTHETIC_OPTIONS = [
-  'Quiet Luxury',
-  'Architectural Minimalism',
-  'Modern Tailoring',
-  'Smart Streetwear',
-  'Classic Ivy',
-  'Avant-Garde',
-];
+const FIT_OPTIONS = [...STYLE_FIT_OPTIONS];
+const AESTHETIC_OPTIONS = [...STYLE_AESTHETIC_OPTIONS];
 
 export function ProfileView({
   profile,
@@ -39,12 +36,16 @@ export function ProfileView({
     setForm(profile);
   }, [profile]);
 
+  const [analysisSuccess, setAnalysisSuccess] = useState<string | null>(null);
+
   const toggleMulti = (field: 'preferredFits' | 'styleAesthetics', value: string) => {
     setForm((prev) => {
       const current = prev[field];
       const next = current.includes(value)
         ? current.filter((v) => v !== value)
-        : [...current, value];
+        : current.length < 12
+          ? [...current, value]
+          : current;
       return { ...prev, [field]: next };
     });
   };
@@ -52,6 +53,7 @@ export function ProfileView({
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setAnalysisSuccess(null);
     setSaving(true);
     try {
       await onSaveProfile(form);
@@ -67,10 +69,14 @@ export function ProfileView({
   const handlePhotoChange = async (file: File | undefined) => {
     if (!file) return;
     setError(null);
+    setAnalysisSuccess(null);
     setUploadingPhoto(true);
     try {
       const compressed = await compressClothingImage(file, 1024);
-      await onUploadPhoto(compressed);
+      await onUploadPhoto(compressed, form);
+      setAnalysisSuccess(
+        'Portrait analyzed & saved to cloud. Your style profile, hex color palette, and all recommendations are now updated.'
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Portrait upload failed.');
     } finally {
@@ -80,11 +86,15 @@ export function ProfileView({
 
   const handleAnalyze = async () => {
     setError(null);
+    setAnalysisSuccess(null);
     setAnalyzing(true);
     try {
-      // Save latest details first so AI reads current bio/measurements
+      // Save latest details first, then pass current form directly so AI never reads stale state
       await onSaveProfile(form);
-      await onAnalyzeBlueprint();
+      await onAnalyzeBlueprint(form);
+      setAnalysisSuccess(
+        'AI Styling Blueprint saved to cloud and actively personalizing Combinations, Studio, Wardrobe, and Advisor.'
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'AI blueprint analysis failed.');
     } finally {
@@ -121,6 +131,16 @@ export function ProfileView({
           className="px-5 py-3.5 rounded-2xl bg-[#FFF2F2] border border-[#D70015]/20 text-[14px] text-[#B00012]"
         >
           {error}
+        </div>
+      )}
+
+      {analysisSuccess && (
+        <div
+          role="status"
+          className="px-5 py-3.5 rounded-2xl bg-[#F0FDF4] border border-[#16A34A]/20 text-[14px] text-[#166534] flex items-center gap-2"
+        >
+          <Check className="w-4 h-4 shrink-0" aria-hidden="true" />
+          <span>{analysisSuccess}</span>
         </div>
       )}
 
@@ -172,33 +192,85 @@ export function ProfileView({
 
             {profile.blueprint ? (
               <div className="pt-5 border-t border-black/[0.06] space-y-5">
-                <div className="flex items-baseline justify-between gap-2">
-                  <h3 className="text-[15px] font-semibold text-[#1D1D1F]">
-                    What Looks Best on You
-                  </h3>
-                  <span className="text-[12px] text-[#6E6E73]">
-                    {profile.blueprint.colorSeason} · {profile.blueprint.contrastLevel}
-                  </span>
+                <div className="space-y-1">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <h3 className="text-[15px] font-semibold text-[#1D1D1F]">
+                      What Looks Best on You
+                    </h3>
+                    <span className="text-[12px] font-medium text-[#0071E3]">
+                      {profile.blueprint.colorSeason} · {profile.blueprint.contrastLevel}
+                    </span>
+                  </div>
+                  <p className="text-[11.5px] text-[#16A34A] flex items-center gap-1">
+                    <Check className="w-3.5 h-3.5" aria-hidden="true" />
+                    {profile.blueprint.photoAnalyzed
+                      ? 'Portrait analyzed & saved · Actively powering all outfits & advisor'
+                      : 'Saved to cloud · Actively powering all outfits & advisor'}
+                  </p>
                 </div>
+
+                {profile.blueprint.visualProfile && (
+                  <div className="rounded-xl bg-[#F5F5F7] px-3.5 py-2.5 text-[13px] leading-[1.55] text-[#48484A]">
+                    <span className="font-medium text-[#1D1D1F]">Portrait Read: </span>
+                    {profile.blueprint.visualProfile}
+                  </div>
+                )}
 
                 <p className="text-[14px] leading-[1.6] text-[#1D1D1F]">
                   {profile.blueprint.summary}
                 </p>
 
-                <div className="space-y-3 text-[13px]">
+                <div className="space-y-3.5 text-[13px]">
                   <div>
                     <p className="text-[12px] font-medium text-[#6E6E73]">Best Colors Near Your Face</p>
-                    <p className="mt-0.5 text-[#1D1D1F]">
-                      {profile.blueprint.bestColors.join(' · ')}
-                    </p>
+                    {profile.blueprint.bestColorHexes && profile.blueprint.bestColorHexes.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                        {profile.blueprint.bestColorHexes.map((hex, idx) => (
+                          <span
+                            key={`${hex}-${idx}`}
+                            className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#F5F5F7] border border-black/[0.06] text-[12px] text-[#1D1D1F]"
+                          >
+                            <span
+                              className="w-3 h-3 rounded-full border border-black/15 shrink-0"
+                              style={{ backgroundColor: hex }}
+                              aria-hidden="true"
+                            />
+                            {profile.blueprint?.bestColors[idx] || hex}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {(!profile.blueprint.bestColorHexes || profile.blueprint.bestColorHexes.length === 0) && (
+                      <p className="mt-0.5 text-[#1D1D1F]">
+                        {profile.blueprint.bestColors.join(' · ')}
+                      </p>
+                    )}
                   </div>
 
                   {profile.blueprint.avoidColors.length > 0 && (
                     <div>
                       <p className="text-[12px] font-medium text-[#6E6E73]">Colors to Avoid / Minimize</p>
-                      <p className="mt-0.5 text-[#6E6E73]">
-                        {profile.blueprint.avoidColors.join(' · ')}
-                      </p>
+                      {profile.blueprint.avoidColorHexes && profile.blueprint.avoidColorHexes.length > 0 ? (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                          {profile.blueprint.avoidColorHexes.map((hex, idx) => (
+                            <span
+                              key={`${hex}-${idx}`}
+                              className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#F5F5F7] border border-black/[0.06] text-[12px] text-[#6E6E73]"
+                            >
+                              <span
+                                className="w-3 h-3 rounded-full border border-black/15 shrink-0"
+                                style={{ backgroundColor: hex }}
+                                aria-hidden="true"
+                              />
+                              {profile.blueprint?.avoidColors[idx] || hex}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-0.5 text-[#6E6E73]">
+                          {profile.blueprint.avoidColors.join(' · ')}
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -230,7 +302,7 @@ export function ProfileView({
               </div>
             ) : (
               <div className="pt-5 border-t border-black/[0.06] text-[13px] text-[#6E6E73]">
-                Upload a clear portrait photo and we&rsquo;ll automatically detect your skin undertone, color season, flattering cuts, and auto-fill your style profile to personalize recommendations everywhere.
+                Upload a clear portrait photo and we&rsquo;ll automatically detect your skin undertone, color season, hex palette, flattering cuts, and save them to your cloud profile to personalize recommendations everywhere.
               </div>
             )}
           </section>
@@ -303,6 +375,8 @@ export function ProfileView({
                 <option value="Cool">Cool</option>
                 <option value="Neutral">Neutral</option>
                 <option value="Olive">Olive</option>
+                <option value="Warm Olive">Warm Olive</option>
+                <option value="Cool Olive">Cool Olive</option>
               </select>
             </div>
           </div>
@@ -321,10 +395,10 @@ export function ProfileView({
             />
           </div>
 
-          {/* Interactive Fit Preference Selector */}
+          {/* Interactive Fit Preference Selector (12 Fits) */}
           <fieldset className="space-y-2.5">
             <legend className="text-[12px] font-medium text-[#6E6E73]">
-              Preferred Fits
+              Preferred Fits ({form.preferredFits.length} selected)
             </legend>
             <div className="flex flex-wrap gap-2">
               {FIT_OPTIONS.map((fit) => {
@@ -335,7 +409,7 @@ export function ProfileView({
                     type="button"
                     aria-pressed={active}
                     onClick={() => toggleMulti('preferredFits', fit)}
-                    className={`px-3.5 py-1.5 rounded-lg text-[13px] font-medium transition-all ${
+                    className={`px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all ${
                       active
                         ? 'bg-[#1D1D1F] text-white'
                         : 'bg-[#F5F5F7] text-[#48484A] hover:bg-black/[0.08]'
@@ -348,10 +422,10 @@ export function ProfileView({
             </div>
           </fieldset>
 
-          {/* Interactive Aesthetic Selector */}
+          {/* Interactive Aesthetic Selector (18 Style Profiles) */}
           <fieldset className="space-y-2.5">
             <legend className="text-[12px] font-medium text-[#6E6E73]">
-              Style Aesthetics
+              Style Profiles &amp; Aesthetics ({form.styleAesthetics.length} selected)
             </legend>
             <div className="flex flex-wrap gap-2">
               {AESTHETIC_OPTIONS.map((style) => {
@@ -362,7 +436,7 @@ export function ProfileView({
                     type="button"
                     aria-pressed={active}
                     onClick={() => toggleMulti('styleAesthetics', style)}
-                    className={`px-3.5 py-1.5 rounded-lg text-[13px] font-medium transition-all ${
+                    className={`px-3 py-1.5 rounded-lg text-[13px] font-medium transition-all ${
                       active
                         ? 'bg-[#1D1D1F] text-white'
                         : 'bg-[#F5F5F7] text-[#48484A] hover:bg-black/[0.08]'

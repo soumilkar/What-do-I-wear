@@ -69,24 +69,32 @@ service cloud.firestore {
         ]) &&
         bp.keys().hasOnly([
           'summary',
+          'visualProfile',
           'colorSeason',
           'contrastLevel',
           'bestColors',
+          'bestColorHexes',
           'avoidColors',
+          'avoidColorHexes',
           'idealSilhouettes',
           'proportionTips',
           'recommendedFabrics',
+          'photoAnalyzed',
           'analyzedAt',
           'modelUsed'
         ]) &&
         isStringBounded(bp.summary, 1, 600) &&
+        (!('visualProfile' in bp) || isStringBounded(bp.visualProfile, 0, 600)) &&
         isStringBounded(bp.colorSeason, 1, 80) &&
         isStringBounded(bp.contrastLevel, 1, 40) &&
         isStringListBounded(bp.bestColors, 0, 8) &&
+        (!('bestColorHexes' in bp) || isStringListBounded(bp.bestColorHexes, 0, 8)) &&
         isStringListBounded(bp.avoidColors, 0, 6) &&
+        (!('avoidColorHexes' in bp) || isStringListBounded(bp.avoidColorHexes, 0, 6)) &&
         isStringListBounded(bp.idealSilhouettes, 0, 6) &&
         isStringListBounded(bp.proportionTips, 0, 6) &&
         isStringListBounded(bp.recommendedFabrics, 0, 8) &&
+        (!('photoAnalyzed' in bp) || bp.photoAnalyzed is bool) &&
         isStringBounded(bp.analyzedAt, 1, 64) &&
         (!('modelUsed' in bp) || isStringBounded(bp.modelUsed, 0, 100))
       );
@@ -135,9 +143,9 @@ service cloud.firestore {
       isStringBounded(data.bio, 0, 600) &&
       isStringBounded(data.height, 0, 40) &&
       isStringBounded(data.bodyType, 0, 60) &&
-      data.skinUndertone in ['Warm', 'Cool', 'Neutral', 'Olive'] &&
-      isStringListBounded(data.preferredFits, 0, 6) &&
-      isStringListBounded(data.styleAesthetics, 0, 6) &&
+      data.skinUndertone in ['Warm', 'Cool', 'Neutral', 'Olive', 'Warm Olive', 'Cool Olive'] &&
+      isStringListBounded(data.preferredFits, 0, 12) &&
+      isStringListBounded(data.styleAesthetics, 0, 12) &&
       data.budgetRange in ['Accessible', 'Mid-Tier', 'Contemporary', 'Luxury'] &&
       data.climate in ['Temperate', 'Warm', 'Cold', 'Four-Season'] &&
       isStringBounded(data.stylingGoals, 0, 300) &&
@@ -366,8 +374,17 @@ service cloud.firestore {
           ]) ||
           // Action: Update portrait photo
           incoming().diff(existing()).affectedKeys().hasOnly(['photoUrl', 'updatedAt']) ||
-          // Action: Update AI styling blueprint
-          incoming().diff(existing()).affectedKeys().hasOnly(['blueprint', 'updatedAt']) ||
+          // Action: Update AI styling blueprint + auto-filled profile fields atomically
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'photoUrl',
+            'blueprint',
+            'skinUndertone',
+            'bodyType',
+            'preferredFits',
+            'styleAesthetics',
+            'stylingGoals',
+            'updatedAt'
+          ]) ||
           // Action: Mark initial seed complete
           incoming().diff(existing()).affectedKeys().hasOnly(['seeded', 'updatedAt'])
         );

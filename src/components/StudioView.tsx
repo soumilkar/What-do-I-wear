@@ -9,6 +9,7 @@ import type {
   UserProfile,
 } from '../types/styling';
 import {
+  classifyTopLayerRole,
   computeDeterministicVector,
   evaluateOutfitLocalHarmony,
 } from '../utils/styleEngine';
@@ -37,13 +38,58 @@ interface StudioViewProps {
   onDeleteOutfit: (outfitId: string) => Promise<void>;
 }
 
-const SLOTS: Array<{ category: GarmentCategory; label: string }> = [
-  { category: 'tops', label: 'Top' },
-  { category: 'bottoms', label: 'Bottom' },
-  { category: 'outerwear', label: 'Outerwear' },
-  { category: 'footwear', label: 'Footwear' },
-  { category: 'accessories', label: 'Accessory' },
+type StudioSlotKey = 'base' | 'mid' | 'bottoms' | 'outerwear' | 'footwear' | 'accessories';
+
+const SLOTS: Array<{
+  key: StudioSlotKey;
+  label: string;
+  hint: string;
+  matches: (g: Garment) => boolean;
+}> = [
+  {
+    key: 'base',
+    label: 'Base Layer (Shirt / Tee / Polo)',
+    hint: 'Worn directly on skin or layered cleanly underneath a sweater or jacket',
+    matches: (g) => g.category === 'tops' && classifyTopLayerRole(g) === 'base',
+  },
+  {
+    key: 'mid',
+    label: 'Mid Layer (Sweater / Cardigan / Knit)',
+    hint: 'Optional warm layer worn over your base shirt or tee',
+    matches: (g) => g.category === 'tops' && classifyTopLayerRole(g) === 'mid',
+  },
+  {
+    key: 'bottoms',
+    label: 'Bottom',
+    hint: 'Trousers, jeans, chinos, shorts, or skirts',
+    matches: (g) => g.category === 'bottoms',
+  },
+  {
+    key: 'outerwear',
+    label: 'Outerwear',
+    hint: 'Coat, blazer, overshirt, or jacket',
+    matches: (g) => g.category === 'outerwear',
+  },
+  {
+    key: 'footwear',
+    label: 'Footwear',
+    hint: 'Shoes, boots, loafers, or sneakers',
+    matches: (g) => g.category === 'footwear',
+  },
+  {
+    key: 'accessories',
+    label: 'Accessory',
+    hint: 'Watch, belt, bag, scarf, or accent',
+    matches: (g) => g.category === 'accessories',
+  },
 ];
+
+function slotKeyForGarment(g: Garment): StudioSlotKey {
+  if (g.category === 'tops') {
+    return classifyTopLayerRole(g) === 'mid' ? 'mid' : 'base';
+  }
+  return g.category;
+}
 
 export function StudioView({
   garments,
@@ -60,7 +106,7 @@ export function StudioView({
   const [mode, setMode] = useState<'builder' | 'lookbook'>('builder');
   const [lookbookFilter, setLookbookFilter] = useState<'all' | 'custom' | 'ai'>('all');
 
-  const [selectedBySlot, setSelectedBySlot] = useState<Partial<Record<GarmentCategory, string>>>({});
+  const [selectedBySlot, setSelectedBySlot] = useState<Partial<Record<StudioSlotKey, string>>>({});
   const [title, setTitle] = useState('');
   const [occasion, setOccasion] = useState<OccasionType>('Smart Casual');
   const [season, setSeason] = useState<SeasonTag>('All-Season');
@@ -78,14 +124,17 @@ export function StudioView({
 
   const garmentMap = useMemo(() => new Map(garments.map((g) => [g.id, g])), [garments]);
 
-  // Pre-fill Studio when user clicks "Customize in Studio" from Combinations
+  // Pre-fill Studio when user clicks "Customize in Studio" from Combinations (preserves Base + Mid layers!)
   useEffect(() => {
     if (!draftSeed) return;
-    const nextSlots: Partial<Record<GarmentCategory, string>> = {};
+    const nextSlots: Partial<Record<StudioSlotKey, string>> = {};
     for (const id of draftSeed.itemIds) {
       const g = garmentMap.get(id);
-      if (g && !nextSlots[g.category]) {
-        nextSlots[g.category] = g.id;
+      if (g) {
+        const key = slotKeyForGarment(g);
+        if (!nextSlots[key]) {
+          nextSlots[key] = g.id;
+        }
       }
     }
     setSelectedBySlot(nextSlots);
@@ -98,7 +147,7 @@ export function StudioView({
   }, [draftSeed, garmentMap, onClearDraftSeed]);
 
   const selectedItems = useMemo(() => {
-    return SLOTS.map((s) => selectedBySlot[s.category])
+    return SLOTS.map((s) => selectedBySlot[s.key])
       .filter((id): id is string => Boolean(id))
       .map((id) => garmentMap.get(id))
       .filter((g): g is Garment => Boolean(g));
@@ -120,12 +169,12 @@ export function StudioView({
     [selectedItems, resolvedVectors, profile, occasion]
   );
 
-  const toggleSlotItem = (category: GarmentCategory, garmentId: string) => {
+  const toggleSlotItem = (slotKey: StudioSlotKey, garmentId: string) => {
     setCritique(null);
     setError(null);
     setSelectedBySlot((prev) => ({
       ...prev,
-      [category]: prev[category] === garmentId ? undefined : garmentId,
+      [slotKey]: prev[slotKey] === garmentId ? undefined : garmentId,
     }));
   };
 
@@ -243,15 +292,18 @@ export function StudioView({
           {/* Left: Category Slot Pickers */}
           <div className="lg:col-span-7 space-y-7">
             {SLOTS.map((slot) => {
-              const itemsInSlot = garments.filter((g) => g.category === slot.category);
-              const selectedId = selectedBySlot[slot.category];
+              const itemsInSlot = garments.filter((g) => slot.matches(g));
+              const selectedId = selectedBySlot[slot.key];
               return (
-                <section key={slot.category} className="space-y-3">
-                  <div className="flex items-baseline justify-between">
-                    <h2 className="text-[16px] font-semibold text-[#1D1D1F]">
-                      {slot.label}
-                    </h2>
-                    <span className="text-[12px] text-[#6E6E73] tabular-nums">
+                <section key={slot.key} className="space-y-3">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <div>
+                      <h2 className="text-[16px] font-semibold text-[#1D1D1F]">
+                        {slot.label}
+                      </h2>
+                      <p className="text-[12px] text-[#86868B]">{slot.hint}</p>
+                    </div>
+                    <span className="text-[12px] text-[#6E6E73] tabular-nums shrink-0">
                       {itemsInSlot.length} available
                     </span>
                   </div>
@@ -268,7 +320,7 @@ export function StudioView({
                           <button
                             key={g.id}
                             type="button"
-                            onClick={() => toggleSlotItem(slot.category, g.id)}
+                            onClick={() => toggleSlotItem(slot.key, g.id)}
                             aria-pressed={isPicked}
                             className={`text-left rounded-2xl overflow-hidden bg-white transition-all ${
                               isPicked

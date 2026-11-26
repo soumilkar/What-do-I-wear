@@ -52,15 +52,55 @@ export interface CompanionMatch {
   reason: string;
 }
 
+export const STYLE_FIT_OPTIONS = [
+  'Tailored',
+  'Relaxed',
+  'Structured',
+  'Oversized',
+  'Slim',
+  'Cropped',
+  'Athletic Taper',
+  'Boxy',
+  'Draped / Fluid',
+  'High-Waisted',
+  'Classic Regular',
+  'Layered',
+] as const;
+
+export const STYLE_AESTHETIC_OPTIONS = [
+  'Quiet Luxury',
+  'Old Money / Heritage',
+  'Modern Tailoring',
+  'Smart Casual',
+  'Minimalist',
+  'Smart Streetwear',
+  'Urban Streetwear',
+  'Classic Ivy / Preppy',
+  'Scandi Chic',
+  'Workwear / Utilitarian',
+  'Mediterranean / Resort',
+  'Techwear / Gorpcore',
+  'Vintage / Retro',
+  'Dark Academia',
+  'Bohemian / Earthy',
+  'Athleisure / Sporty',
+  'Rock / Edgy',
+  'Avant-Garde',
+] as const;
+
 export interface AIProfileBlueprint {
   summary: string;
+  visualProfile?: string;
   colorSeason: string;
   contrastLevel: string;
   bestColors: string[];
+  bestColorHexes?: string[];
   avoidColors: string[];
+  avoidColorHexes?: string[];
   idealSilhouettes: string[];
   proportionTips: string[];
   recommendedFabrics: string[];
+  photoAnalyzed?: boolean;
   analyzedAt: string;
   modelUsed?: string;
 }
@@ -71,7 +111,7 @@ export interface UserProfile {
   bio: string;
   height: string;
   bodyType: string;
-  skinUndertone: 'Warm' | 'Cool' | 'Neutral' | 'Olive';
+  skinUndertone: 'Warm' | 'Cool' | 'Neutral' | 'Olive' | 'Warm Olive' | 'Cool Olive';
   preferredFits: string[];
   styleAesthetics: string[];
   budgetRange: 'Accessible' | 'Mid-Tier' | 'Contemporary' | 'Luxury';

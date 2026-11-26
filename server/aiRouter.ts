@@ -1,17 +1,20 @@
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
-import type {
-  AIProfileBlueprint,
-  AdvisorMessage,
-  Garment,
-  GarmentCategory,
-  GroundingSource,
-  OccasionType,
-  OutfitCombination,
-  SeasonTag,
-  UserProfile,
+import {
+  STYLE_AESTHETIC_OPTIONS,
+  STYLE_FIT_OPTIONS,
+  type AIProfileBlueprint,
+  type AdvisorMessage,
+  type Garment,
+  type GarmentCategory,
+  type GroundingSource,
+  type OccasionType,
+  type OutfitCombination,
+  type SeasonTag,
+  type UserProfile,
 } from '../src/types/styling.ts';
 import type { CandidateCombination } from '../src/utils/styleEngine.ts';
 import {
+  classifyTopLayerRole,
   computeDeterministicVector,
   computeWardrobeIntelligenceSummary,
   normalizeVector,
@@ -432,8 +435,17 @@ export function compactProfileSummary(profile: UserProfile): string {
   ].filter(Boolean);
 
   if (profile.blueprint) {
+    if (profile.blueprint.visualProfile) {
+      lines.push(`PortraitVisualProfile:${profile.blueprint.visualProfile.slice(0, 320)}`);
+    }
+    const bestHexes = profile.blueprint.bestColorHexes?.length
+      ? `(${profile.blueprint.bestColorHexes.slice(0, 6).join(',')})`
+      : '';
+    const avoidHexes = profile.blueprint.avoidColorHexes?.length
+      ? `(${profile.blueprint.avoidColorHexes.slice(0, 4).join(',')})`
+      : '';
     lines.push(
-      `Blueprint:${profile.blueprint.colorSeason}(${profile.blueprint.contrastLevel} contrast); best:${profile.blueprint.bestColors.slice(0, 6).join(',')}; avoid:${profile.blueprint.avoidColors.slice(0, 4).join(',')}; silhouettes:${profile.blueprint.idealSilhouettes.slice(0, 3).join(',')}; proportions:${profile.blueprint.proportionTips.slice(0, 2).join('; ')}; fabrics:${profile.blueprint.recommendedFabrics.slice(0, 4).join(',')}`
+      `Blueprint:${profile.blueprint.colorSeason}(${profile.blueprint.contrastLevel} contrast); best:${profile.blueprint.bestColors.slice(0, 6).join(',')}${bestHexes}; avoid:${profile.blueprint.avoidColors.slice(0, 4).join(',')}${avoidHexes}; silhouettes:${profile.blueprint.idealSilhouettes.slice(0, 3).join(',')}; proportions:${profile.blueprint.proportionTips.slice(0, 2).join('; ')}; fabrics:${profile.blueprint.recommendedFabrics.slice(0, 4).join(',')}`
     );
   }
   return lines.join(' | ');
@@ -489,6 +501,14 @@ export async function analyzeGarmentWithAI(
   const prompt = `Forensically inspect this clothing item photo${fileNameHint ? ` (filename hint: ${fileNameHint})` : ''}.
 - Ignore background surfaces (bedsheets, floors, hangers, walls) when extracting the true dominant garment primaryColor and 6-digit colorHex.
 - Classify exact fabric weave, weight (Lightweight/Midweight/Heavyweight), tactile texture, silhouette volume (slim, tailored, relaxed, wide-leg, oversized, cropped, longline), pattern, and undertone (Warm/Cool/Neutral).
+- STRICT layeringRole accuracy:
+  * Shirts, t-shirts, oxfords, button-downs, polos, tanks, henleys, blouses -> layeringRole: "Base"
+  * Sweaters, pullovers, knitwear, cardigans, hoodies, sweatshirts, sweater vests, quarter-zips, fleeces -> layeringRole: "Mid"
+  * Jackets, coats, blazers, overshirts, trenches, parkas -> layeringRole: "Outer"
+  * Pants, trousers, jeans, chinos, shorts, skirts -> layeringRole: "Bottom"
+  * Shoes, boots, sneakers, loafers, sandals -> layeringRole: "Footwear"
+  * Belts, watches, bags, scarves, hats, jewelry -> layeringRole: "Accent"
+- STRICT season accuracy: NEVER tag wool/cashmere/merino sweaters, hoodies, fleeces, heavy knits, corduroy, flannel, or winter coats as "Summer" or "All-Season" — tag them accurately as ["Autumn", "Winter"] (or ["Spring", "Autumn", "Winter"] for light cotton knits).
 - Calibrate formality accurately: 1-2=gym/loungewear, 3-4=graphic tee/hoodie/joggers, 5=everyday denim/casual knit, 6-7=smart casual shirt/chinos/loafers/overshirt, 8=tailored blazer/pleated wool trousers, 9-10=formal suiting/black-tie.
 - Keep every field concise, accurate, and high-signal for outfit matching.`;
 
@@ -688,14 +708,24 @@ export async function rankCombinationsWithAI(
   season: SeasonTag,
   customPrompt?: string,
   savedOutfits: OutfitCombination[] = [],
-  explorationMode: 'best' | 'fresh' = 'best'
+  explorationMode: 'best' | 'fresh' = 'best',
+  portraitImage?: { base64: string; mimeType: string } | null
 ): Promise<{ combinations: OutfitCombination[]; modelUsed: string }> {
   const ai = getGenAIClient();
   const tiers = await resolveFullHierarchy(DEEP_REASONING_HIERARCHY, ai);
 
+  const effectiveSeason = candidates[0]?.effectiveSeason ?? season;
   const targetCount = Math.min(5, candidates.length);
+  const labelLayer = (g: Garment): string => {
+    if (g.category === 'tops') return classifyTopLayerRole(g) === 'mid' ? 'MID-LAYER' : 'BASE';
+    if (g.category === 'outerwear') return 'OUTER';
+    if (g.category === 'bottoms') return 'BOTTOM';
+    if (g.category === 'footwear') return 'FOOTWEAR';
+    return 'ACCENT';
+  };
+
   const candidateLines = candidates.map((cand, idx) => {
-    const itemDesc = cand.items.map((g) => compactGarmentLine(g)).join(' + ');
+    const itemDesc = cand.items.map((g) => `[${labelLayer(g)}] ${compactGarmentLine(g)}`).join(' + ');
     return `C${idx + 1} [local:${cand.localScore}, personal:${cand.personalScore}, oklchColor:${cand.colorScore}(${cand.paletteSummary}), proportion:${cand.proportionScore}, vec:${cand.vectorScore}, fresh:${cand.freshnessScore}]: ${itemDesc}`;
   });
 
@@ -713,28 +743,46 @@ export async function rankCombinationsWithAI(
       ? 'Exploration Mode: FRESH ROTATION — prioritize inventive, under-worn combinations over predictable repeats.'
       : 'Exploration Mode: BEST MATCH — prioritize highest flattery, proportion precision, and effortless polish.';
 
-  const prompt = `USER STYLE PROFILE & 12-SEASON BLUEPRINT:
+  const thermalNote =
+    effectiveSeason === 'Summer'
+      ? 'THERMAL RULE: Target weather is SUMMER (hot/breathable). Penalize or drop any candidate with warm wool/sweaters/heavy layers; reward breathable shirts/tees/lightweight fabrics.'
+      : effectiveSeason === 'Autumn' || effectiveSeason === 'Winter'
+        ? 'LAYERING RULE: Target weather is COOL/COLD. Strongly reward intentional multi-layer outfits ([BASE] shirt/tee UNDER [MID-LAYER] sweater/cardigan/knit and/or [OUTER]). Never reward bare sweaters without an underlayer when layered candidates exist.'
+        : 'LAYERING RULE: When a candidate includes a [BASE] shirt/tee under a [MID-LAYER] sweater/cardigan/vest, explicitly explain how to style the collar, cuffs, or hem peek.';
+
+  const promptText = `USER STYLE PROFILE & STORED PORTRAIT ANALYSIS${portraitImage ? ' (User portrait photo attached — inspect their actual skin tone, hair/eye contrast, and face/shoulder frame directly!)' : ''}:
 ${compactProfileSummary(profile)}${savedTasteLine}
 
-TARGET CONTEXT: Occasion=${occasion} | Season=${season} | ${modeNote}${cleanBrief ? `\nEXACT USER REQUEST / VIBE: "${cleanBrief}"` : ''}
+TARGET CONTEXT: Occasion=${occasion} | EffectiveSeason=${effectiveSeason} | ${modeNote}${cleanBrief ? `\nEXACT USER REQUEST / VIBE: "${cleanBrief}"` : ''}
+${thermalNote}
 
-PRE-SCREENED MMR CANDIDATE OUTFITS (OKLCH color, proportion/layering physics, 12-season personal fit, and 128-dim visual vectors):
+PRE-SCREENED MMR CANDIDATE OUTFITS (OKLCH color, multi-layer & proportion physics, 12-season personal fit, and 128-dim visual vectors):
 ${candidateLines.join('\n')}
 
 TASK:
-Act as an elite editorial personal stylist cross-encoder. Critically compare all ${candidates.length} candidates for THIS specific person's skin undertone, 12-season color palette (especially tops/outerwear near the face), natural contrast level, body proportions, fabric-weight layering physics, and occasion${cleanBrief ? ' + exact user request' : ''}.
+Act as an elite editorial personal stylist cross-encoder. Critically compare all ${candidates.length} candidates for THIS specific person's real coloring, portrait features, 12-season palette (especially [BASE]/[MID-LAYER]/[OUTER] near the face), natural contrast level, body proportions, multi-layer dressing physics, and ${effectiveSeason} ${occasion} suitability${cleanBrief ? ' + exact user request' : ''}.
 - Select and rank the BEST ${targetCount} distinct outfits from rank 1 (strongest) to rank ${targetCount}${candidates.length > targetCount ? ` (drop the ${candidates.length - targetCount} weakest or most redundant candidates)` : ''}.
 - Differentiate scores honestly (e.g. 95, 91, 87, 84, 80 — do NOT give every outfit the same inflated score).
-- Make every explanation concrete and visual: reference real garment fabrics, color temperature near the face, silhouette/Rule-of-Thirds proportion balance, and one actionable styling cue (tucking, cuffing, open layer, or shoe/belt echo).
+- Make every explanation concrete, grounded in their portrait & actual garments: explain how the layers work together (e.g. shirt collar peeking under sweater, sleeve cuff, tucked base, open jacket) and why those colors flatter THIS person specifically.
 Return a valid JSON array of exactly ${targetCount} objects sorted by rank ascending.`;
+
+  const contentsPayload = portraitImage
+    ? {
+        parts: [
+          { text: '[User Portrait Photo — use for skin tone, hair/eye contrast, and frame flattery]' },
+          { inlineData: { mimeType: portraitImage.mimeType, data: portraitImage.base64 } },
+          { text: promptText },
+        ],
+      }
+    : promptText;
 
   const res = await executeWithModelHierarchy(tiers, async (tier) => {
     const response = await ai.models.generateContent({
       model: tier.model,
-      contents: prompt,
+      contents: contentsPayload,
       config: {
         systemInstruction:
-          'You are a world-class personal fashion director and 12-season color analyst. Judge outfits rigorously on complexion flattery near the face, OKLCH tonal/60-30-10 harmony, big-over-fitted silhouette balance, fabric-weight layering physics, and occasion precision. Be specific, editorial, and concise.',
+          'You are a world-class personal fashion director and 12-season color analyst. Judge outfits rigorously on real-world layering (shirts/tees under sweaters & cardigans), thermal season realism (never sweaters in summer), complexion flattery near the face, OKLCH tonal/60-30-10 harmony, and silhouette balance. Be specific, editorial, and concise.',
         ...buildThinkingConfig(tier),
         responseMimeType: 'application/json',
         responseSchema: {
@@ -802,7 +850,7 @@ Return a valid JSON array of exactly ${targetCount} objects sorted by rank ascen
         vectorHarmonyScore: cand.vectorScore,
         itemIds: cand.itemIds,
         occasion,
-        season,
+        season: effectiveSeason,
         rationale: entry.rationale,
         fabricFitNotes: entry.fabricFitNotes,
         bodyTailoringNote: entry.bodyTailoringNote,
@@ -829,26 +877,21 @@ export interface SuggestedProfileFields {
   stylingGoals?: string;
 }
 
-const PROFILE_FIT_OPTIONS = ['Tailored', 'Relaxed', 'Structured', 'Oversized', 'Slim', 'Cropped'];
-const PROFILE_AESTHETIC_OPTIONS = [
-  'Quiet Luxury',
-  'Architectural Minimalism',
-  'Modern Tailoring',
-  'Smart Streetwear',
-  'Classic Ivy',
-  'Avant-Garde',
-];
+const PROFILE_FIT_OPTIONS = [...STYLE_FIT_OPTIONS];
+const PROFILE_AESTHETIC_OPTIONS = [...STYLE_AESTHETIC_OPTIONS];
 const PROFILE_SKIN_UNDERTONES: Array<UserProfile['skinUndertone']> = [
   'Warm',
   'Cool',
   'Neutral',
   'Olive',
+  'Warm Olive',
+  'Cool Olive',
 ];
 
 /**
- * Analyzes user's portrait photo + written profile ONCE, caches a compact Personal Styling Blueprint,
- * AND infers flattering style profile fields (skin undertone, body proportions, best fits, aesthetics, styling goals)
- * to auto-fill the user's style profile and personalize recommendations site-wide.
+ * Analyzes user's portrait photo + written profile, produces a comprehensive Personal Styling Blueprint
+ * (including visualProfile description and perceptual best/avoid hex codes), AND auto-fills flattering
+ * style profile fields stored on the server/cloud and used across every recommendation surface.
  */
 export async function analyzeUserProfileWithAI(
   profile: UserProfile,
@@ -867,14 +910,22 @@ export async function analyzeUserProfileWithAI(
     parts.push({ inlineData: { mimeType: photoMimeType, data: photoBase64 } });
   }
   parts.push({
-    text: `Analyze this user's personal styling profile${photoBase64 ? ' and portrait photo carefully (inspect skin undertone, hair/eye contrast, face & shoulder proportions, and natural vibe)' : ''}:
+    text: `Analyze this user's personal styling profile${photoBase64 ? ' AND uploaded portrait photo in forensic detail (inspect actual skin tone depth & undertone, hair color/depth, eye/brow contrast, face shape, neckline/shoulder proportions, and natural presence)' : ''}:
 ${compactProfileSummary(profile)}
-Derive an encouraging, high-precision Personal Styling Blueprint covering what will look BEST on THIS specific person: color season, contrast level, best & avoid colors, ideal silhouettes, proportion tailoring tips, and recommended fabric weights.
+Derive a high-precision Personal Styling Blueprint covering what will look BEST on THIS specific person:
+- visualProfile: 1-2 factual, respectful sentences describing their observed skin depth/undertone, hair & eye contrast, face shape, and shoulder/frame proportions (this is stored and injected into every outfit & shopping AI prompt!).
+- colorSeason: exact 12-season label (e.g. Deep Autumn, Warm Autumn, Soft Autumn, True Winter, Deep Winter, Bright Winter, True Summer, Soft Summer, Light Summer, True Spring, Warm Spring, Bright Spring).
+- contrastLevel: Low, Medium, Medium-High, or High.
+- bestColors: 5-6 specific flattering color names near their face.
+- bestColorHexes: 5-6 corresponding 6-digit hex codes (e.g. "#2E4034", "#C19A6B") used for mathematical OKLCH garment matching!
+- avoidColors: 3-4 specific colors that wash them out or clash.
+- avoidColorHexes: 3-4 corresponding 6-digit hex codes to penalize near their face!
+- idealSilhouettes, proportionTips, recommendedFabrics tailored to their exact build.
 ALSO auto-fill their ideal style profile fields:
-- detectedSkinUndertone: one of Warm, Cool, Neutral, Olive
+- detectedSkinUndertone: one of [${PROFILE_SKIN_UNDERTONES.join(', ')}]
 - detectedBodyType: concise 2-4 word frame/build note (e.g. "Balanced Athletic", "Lean Proportional", "Broad Shoulders")
-- recommendedFits: 2-3 choices ONLY from [${PROFILE_FIT_OPTIONS.join(', ')}]
-- recommendedAesthetics: 2-3 choices ONLY from [${PROFILE_AESTHETIC_OPTIONS.join(', ')}]
+- recommendedFits: 2-4 choices ONLY from [${PROFILE_FIT_OPTIONS.join(', ')}]
+- recommendedAesthetics: 2-4 choices ONLY from [${PROFILE_AESTHETIC_OPTIONS.join(', ')}]
 - personalizedStylingGoal: 1 crisp sentence describing what looks sharpest on them.`,
   });
 
@@ -884,21 +935,24 @@ ALSO auto-fill their ideal style profile fields:
       contents: { parts },
       config: {
         systemInstruction:
-          'You are a respectful, observant master image consultant and color analyst. Focus on flattering color harmony, skin undertone accuracy, proportion geometry, and fabric drape tailored specifically to this individual.',
+          'You are a respectful, observant master image consultant and 12-season color analyst. Extract concrete, photo-grounded skin undertone, contrast, hex palettes, and proportion geometry tailored specifically to this individual—never generic boilerplate.',
         ...buildThinkingConfig(tier),
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
           properties: {
             summary: { type: Type.STRING, description: '2 crisp sentences summarizing what looks best on this person' },
-            colorSeason: { type: Type.STRING, description: 'e.g. Deep Autumn, Soft Summer, True Winter' },
-            contrastLevel: { type: Type.STRING, description: 'Low, Medium, or High contrast' },
+            visualProfile: { type: Type.STRING, description: '1-2 factual sentences of visual coloring, hair/eye contrast, face & shoulder proportions observed from photo/profile' },
+            colorSeason: { type: Type.STRING, description: 'Exact 12-season label e.g. Deep Autumn, True Winter' },
+            contrastLevel: { type: Type.STRING, description: 'Low, Medium, Medium-High, or High' },
             bestColors: { type: Type.ARRAY, items: { type: Type.STRING } },
+            bestColorHexes: { type: Type.ARRAY, items: { type: Type.STRING }, description: '6-digit hex codes matching bestColors' },
             avoidColors: { type: Type.ARRAY, items: { type: Type.STRING } },
+            avoidColorHexes: { type: Type.ARRAY, items: { type: Type.STRING }, description: '6-digit hex codes matching avoidColors' },
             idealSilhouettes: { type: Type.ARRAY, items: { type: Type.STRING } },
             proportionTips: { type: Type.ARRAY, items: { type: Type.STRING } },
             recommendedFabrics: { type: Type.ARRAY, items: { type: Type.STRING } },
-            detectedSkinUndertone: { type: Type.STRING, description: 'One of: Warm, Cool, Neutral, Olive' },
+            detectedSkinUndertone: { type: Type.STRING, description: 'One of: Warm, Cool, Neutral, Olive, Warm Olive, Cool Olive' },
             detectedBodyType: { type: Type.STRING, description: 'Concise respectful frame/build note' },
             recommendedFits: { type: Type.ARRAY, items: { type: Type.STRING } },
             recommendedAesthetics: { type: Type.ARRAY, items: { type: Type.STRING } },
@@ -906,10 +960,13 @@ ALSO auto-fill their ideal style profile fields:
           },
           required: [
             'summary',
+            'visualProfile',
             'colorSeason',
             'contrastLevel',
             'bestColors',
+            'bestColorHexes',
             'avoidColors',
+            'avoidColorHexes',
             'idealSilhouettes',
             'proportionTips',
             'recommendedFabrics',
@@ -933,15 +990,27 @@ ALSO auto-fill their ideal style profile fields:
       }
     >(response.text, 'Empty profile blueprint response');
 
+    const cleanHexes = (arr: unknown, max: number): string[] =>
+      Array.isArray(arr)
+        ? arr
+            .filter((h): h is string => typeof h === 'string' && /^#[0-9A-Fa-f]{6}$/.test(h.trim()))
+            .map((h) => h.trim().toUpperCase())
+            .slice(0, max)
+        : [];
+
     const blueprint: AIProfileBlueprint = {
-      summary: parsed.summary,
-      colorSeason: parsed.colorSeason,
-      contrastLevel: parsed.contrastLevel,
+      summary: (parsed.summary || 'Balanced personal style profile.').slice(0, 600),
+      visualProfile: (parsed.visualProfile || '').trim().slice(0, 600),
+      colorSeason: (parsed.colorSeason || 'Neutral Balanced').slice(0, 80),
+      contrastLevel: (parsed.contrastLevel || 'Medium').slice(0, 40),
       bestColors: (parsed.bestColors ?? []).slice(0, 6),
+      bestColorHexes: cleanHexes(parsed.bestColorHexes, 6),
       avoidColors: (parsed.avoidColors ?? []).slice(0, 4),
-      idealSilhouettes: (parsed.idealSilhouettes ?? []).slice(0, 4),
-      proportionTips: (parsed.proportionTips ?? []).slice(0, 4),
-      recommendedFabrics: (parsed.recommendedFabrics ?? []).slice(0, 5),
+      avoidColorHexes: cleanHexes(parsed.avoidColorHexes, 4),
+      idealSilhouettes: (parsed.idealSilhouettes ?? []).slice(0, 5),
+      proportionTips: (parsed.proportionTips ?? []).slice(0, 5),
+      recommendedFabrics: (parsed.recommendedFabrics ?? []).slice(0, 6),
+      photoAnalyzed: Boolean(photoBase64),
       analyzedAt: new Date().toISOString(),
       modelUsed: tier.id,
     };
@@ -951,14 +1020,14 @@ ALSO auto-fill their ideal style profile fields:
     );
     const matchedFits = (parsed.recommendedFits ?? [])
       .map((f) => PROFILE_FIT_OPTIONS.find((opt) => opt.toLowerCase() === f.trim().toLowerCase()))
-      .filter((f): f is string => Boolean(f))
-      .slice(0, 3);
+      .filter((f): f is (typeof STYLE_FIT_OPTIONS)[number] => Boolean(f))
+      .slice(0, 4);
     const matchedAesthetics = (parsed.recommendedAesthetics ?? [])
       .map((a) =>
         PROFILE_AESTHETIC_OPTIONS.find((opt) => opt.toLowerCase() === a.trim().toLowerCase())
       )
-      .filter((a): a is string => Boolean(a))
-      .slice(0, 3);
+      .filter((a): a is (typeof STYLE_AESTHETIC_OPTIONS)[number] => Boolean(a))
+      .slice(0, 4);
 
     const suggestedProfile: SuggestedProfileFields = {};
     if (matchedUndertone) suggestedProfile.skinUndertone = matchedUndertone;
@@ -987,7 +1056,8 @@ ALSO auto-fill their ideal style profile fields:
 export async function critiqueCustomOutfitWithAI(
   items: Garment[],
   profile: UserProfile,
-  occasion: OccasionType
+  occasion: OccasionType,
+  portraitImage?: { base64: string; mimeType: string } | null
 ): Promise<{
   score: number;
   rationale: string;
@@ -1001,16 +1071,37 @@ export async function critiqueCustomOutfitWithAI(
   const prompt = `Profile: ${compactProfileSummary(profile)}
 Occasion: ${occasion}
 Custom outfit selected by user:
-${items.map((g) => compactGarmentLine(g)).join('\n')}
-Evaluate this custom combination with honest, constructive precision.`;
+${items
+  .map(
+    (g) =>
+      `[${
+        g.category === 'tops'
+          ? classifyTopLayerRole(g) === 'mid'
+            ? 'MID-LAYER'
+            : 'BASE'
+          : g.category.toUpperCase()
+      }] ${compactGarmentLine(g)}`
+  )
+  .join('\n')}
+Evaluate this custom combination with honest, constructive precision for THIS specific person's coloring, proportions, and real-world layering (e.g., if a sweater/cardigan is worn with no base shirt underneath, call it out and suggest the ideal underlayer).`;
+
+  const contents =
+    portraitImage && portraitImage.base64 && portraitImage.mimeType
+      ? {
+          parts: [
+            { inlineData: { mimeType: portraitImage.mimeType, data: portraitImage.base64 } },
+            { text: prompt },
+          ],
+        }
+      : prompt;
 
   const res = await executeWithModelHierarchy(tiers, async (tier) => {
     const response = await ai.models.generateContent({
       model: tier.model,
-      contents: prompt,
+      contents,
       config: {
         systemInstruction:
-          'You are an expert personal stylist reviewing a client-built outfit. Be concise, accurate, and actionable.',
+          'You are an expert personal stylist reviewing a client-built outfit. Use their portrait/visual blueprint to judge color harmony near their face, silhouette balance, and practical layering. Be concise, accurate, and actionable.',
         ...buildThinkingConfig(tier),
         responseMimeType: 'application/json',
         responseSchema: {
@@ -1062,7 +1153,8 @@ export async function chatWithShoppingAdvisor(
   garments: Garment[],
   savedOutfits: OutfitCombination[],
   profile: UserProfile,
-  attachedImages: AdvisorImageInput[] = []
+  attachedImages: AdvisorImageInput[] = [],
+  portraitImage?: { base64: string; mimeType: string } | null
 ): Promise<{
   content: string;
   referencedItemIds: string[];
@@ -1093,20 +1185,21 @@ export async function chatWithShoppingAdvisor(
     .join('\n');
 
   const hasImages = attachedImages.length > 0;
+  const hasPortrait = Boolean(portraitImage?.base64 && portraitImage?.mimeType);
   const imageRules = hasImages
     ? `\nPHOTO BUY/COMPARE PROTOCOL (${attachedImages.length} item${attachedImages.length > 1 ? 's' : ''} uploaded: Option 1${attachedImages.length > 1 ? `..Option ${attachedImages.length}` : ''}):
-- Visually inspect each uploaded item's color temperature, saturation, fabric drape/weight, silhouette volume, and formality.
+- Visually inspect each uploaded item's color temperature, saturation, fabric drape/weight, silhouette volume, and formality — AND compare directly against the user's portrait & 12-season coloring.
 - Structure your response cleanly in Markdown:
   1. **### Verdict** — Clear **BUY**, **SKIP**, or **#1 Winner: Option X** plus a calibrated **X/10 Wardrobe Fit** score.
   2. **Why It Works (or Doesn't) on You** — Evaluate against their exact 12-season color palette, skin undertone, natural contrast level, and body proportions.
-  3. **Outfits You Can Build Immediately** — Give 2–3 specific, wear-ready outfits pairing the recommended buy with their actual owned pieces using [[item:GARMENT_ID|Exact Garment Name]] links.
+  3. **Outfits You Can Build Immediately** — Give 2–3 specific, wear-ready layered outfits pairing the recommended buy with their actual owned pieces using [[item:GARMENT_ID|Exact Garment Name]] links.
   4. **Duplicate & ROI Check** — Flag if they already own something redundant (link the owned item!) or confirm which wardrobe gap it solves.`
     : '';
 
   const systemInstruction = `You are the Private Editorial Stylist & Shopping Advisor inside "What do I Wear?".
-You combine 12-season color theory, proportion geometry, live fashion trends, and strict cost-per-wear / outfit-multiplier discipline.
+You combine 12-season color theory, proportion geometry, realistic multi-layer dressing (shirts/tees under sweaters & cardigans, breathable pieces in summer), live fashion trends, and strict cost-per-wear / outfit-multiplier discipline.
 
-USER PROFILE & PERSONAL BLUEPRINT:
+USER PROFILE & STORED PORTRAIT ANALYSIS${hasPortrait ? ' (User portrait photo attached for direct visual reference)' : ''}:
 ${compactProfileSummary(profile)}
 
 WARDROBE DNA TELEMETRY (computed live):
@@ -1119,7 +1212,8 @@ SAVED LOOKS:
 ${compactSaved}
 
 Guidelines:
-- Give decisive, honest, taste-driven advice grounded strictly in what looks BEST on THIS specific person and what they ALREADY own.
+- Give decisive, honest, taste-driven advice grounded strictly in what looks BEST on THIS specific person (referencing their portrait coloring, contrast, and build) and what they ALREADY own.
+- REAL-WORLD DRESSING COMMON SENSE: Always include proper base underlayers (shirt/tee/polo) beneath sweaters, cardigans, vests, and jackets when suggesting layered outfits, and NEVER suggest sweaters, wool knits, or heavy coats for Summer / hot weather!
 - ALWAYS hyperlink any clothing piece you mention from USER WARDROBE using the exact syntax [[item:GARMENT_ID|Exact Garment Name]] (for example: [[item:garment_abc123|Ivory Merino Crewneck]]). Only use real GARMENT_IDs listed above—never invent IDs for items they do not own.
 - Use clean Markdown formatting (**bold** for verdicts and key takeaways, ### headings when structuring sections, *italics* for styling nuances, and "-" bullet points).
 - Whenever recommending a purchase, specify exact color/undertone, fabric/weight, silhouette cut, and how many new outfits it unlocks with their current closet.${imageRules}
@@ -1130,6 +1224,18 @@ Guidelines:
   const multimodalParts: Array<
     { text: string } | { inlineData: { mimeType: string; data: string } }
   > = [];
+
+  if (hasPortrait && portraitImage) {
+    multimodalParts.push({
+      text: '[User Stored Portrait Photo — reference their real skin tone, hair/eye contrast, and frame]',
+    });
+    multimodalParts.push({
+      inlineData: {
+        mimeType: portraitImage.mimeType,
+        data: portraitImage.base64,
+      },
+    });
+  }
 
   if (hasImages) {
     attachedImages.slice(0, 4).forEach((img, idx) => {
@@ -1142,13 +1248,16 @@ Guidelines:
         },
       });
     });
+  }
+
+  if (multimodalParts.length > 0) {
     multimodalParts.push({ text: textPrompt });
   }
 
   const res = await executeWithModelHierarchy(tiers, async (tier) => {
     const response = await ai.models.generateContent({
       model: tier.model,
-      contents: hasImages ? { parts: multimodalParts } : textPrompt,
+      contents: multimodalParts.length > 0 ? { parts: multimodalParts } : textPrompt,
       config: {
         systemInstruction,
         ...buildThinkingConfig(tier),

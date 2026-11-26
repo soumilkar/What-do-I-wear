@@ -7,8 +7,27 @@ import type {
   SeasonTag,
   UserProfile,
 } from '../types/styling';
-import { evaluateOutfitLocalHarmony } from '../utils/styleEngine';
+import {
+  classifyTopLayerRole,
+  evaluateOutfitLocalHarmony,
+} from '../utils/styleEngine';
 import { SmartImage } from './SmartImage';
+
+function formatLayerRoleLabel(garment: Garment): string {
+  if (garment.category === 'tops') {
+    return classifyTopLayerRole(garment) === 'mid' ? 'Mid Layer' : 'Base Layer';
+  }
+  switch (garment.category) {
+    case 'outerwear':
+      return 'Outerwear';
+    case 'bottoms':
+      return 'Bottom';
+    case 'footwear':
+      return 'Footwear';
+    default:
+      return 'Accent';
+  }
+}
 
 interface CombinationsViewProps {
   garments: Garment[];
@@ -40,10 +59,11 @@ const OCCASIONS: OccasionType[] = [
 const SEASONS: SeasonTag[] = ['All-Season', 'Spring', 'Summer', 'Autumn', 'Winter'];
 
 const QUICK_VIBE_PROMPTS = [
+  'Breathable summer outfit',
+  'Layered shirt + sweater',
   'Clean monochrome look',
-  'Relaxed weekend, no jacket',
   'Sharp dinner date',
-  'Effortless layered office',
+  'Relaxed weekend, no jacket',
 ];
 
 export function CombinationsView({
@@ -243,11 +263,12 @@ export function CombinationsView({
             </label>
             {profile.blueprint ? (
               <span className="text-[12px] text-[#0071E3]">
-                Tailored to your {profile.blueprint.colorSeason} palette &amp; {profile.bodyType || 'personal'} proportions
+                {profile.blueprint.photoAnalyzed ? 'Portrait + ' : ''}
+                {profile.blueprint.colorSeason} palette &amp; {profile.bodyType || 'personal'} proportions active
               </span>
             ) : (
               <span className="text-[12px] text-[#86868B]">
-                Scored for your {profile.skinUndertone} undertone &amp; preferred fits
+                Scored for your {profile.skinUndertone} undertone &amp; {profile.styleAesthetics[0] || 'preferred'} style
               </span>
             )}
           </div>
@@ -335,21 +356,28 @@ export function CombinationsView({
                 key={combo.id}
                 className="surface-card rounded-[26px] overflow-hidden grid grid-cols-1 lg:grid-cols-12 items-stretch"
               >
-                {/* Left Visual Collage of Wardrobe Pieces */}
+                {/* Left Visual Collage of Wardrobe Pieces (supports multi-layer Base + Mid + Outer stacks) */}
                 <div className="lg:col-span-6 bg-[#EFEFF2] p-5 flex flex-col justify-center gap-3.5">
-                  <div className="grid grid-cols-2 gap-3.5">
-                    {pieces.slice(0, 4).map((piece) => (
+                  <div
+                    className={`grid gap-3 ${
+                      pieces.length >= 5 ? 'grid-cols-2 sm:grid-cols-3' : 'grid-cols-2'
+                    }`}
+                  >
+                    {pieces.slice(0, 6).map((piece) => (
                       <div
                         key={piece.id}
                         className="rounded-2xl overflow-hidden bg-white border border-black/[0.05] flex flex-col"
                       >
-                        <div className="aspect-[4/4] w-full bg-[#F5F5F7] overflow-hidden">
+                        <div className="relative aspect-[4/4] w-full bg-[#F5F5F7] overflow-hidden">
                           <SmartImage
                             src={piece.imageUrl}
                             alt={piece.name}
                             swatchHex={piece.colorHex}
                             className="w-full h-full object-cover"
                           />
+                          <span className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-white/90 backdrop-blur-xs text-[10px] font-semibold text-[#1D1D1F] border border-black/[0.06]">
+                            {formatLayerRoleLabel(piece)}
+                          </span>
                         </div>
                         <div className="px-3 py-2 flex items-center justify-between gap-2">
                           <span className="text-[12px] font-medium text-[#1D1D1F] truncate">

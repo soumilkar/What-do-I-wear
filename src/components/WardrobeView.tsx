@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react';
 import { ArrowUpRight, Search, Upload } from 'lucide-react';
-import type { CompanionMatch, Garment, GarmentCategory } from '../types/styling';
+import type { CompanionMatch, Garment, GarmentCategory, UserProfile } from '../types/styling';
+import { scoreGarmentForPerson } from '../utils/styleEngine';
 import { SmartImage } from './SmartImage';
 
 interface WardrobeViewProps {
   garments: Garment[];
+  profile: UserProfile;
   savedOutfitCount: number;
   rankedCount: number;
   companionsByGarment: Record<string, CompanionMatch[]>;
@@ -24,6 +26,7 @@ const CATEGORY_TABS: Array<{ id: 'all' | GarmentCategory; label: string }> = [
 
 export function WardrobeView({
   garments,
+  profile,
   savedOutfitCount,
   rankedCount,
   companionsByGarment,
@@ -33,7 +36,15 @@ export function WardrobeView({
 }: WardrobeViewProps) {
   const [category, setCategory] = useState<'all' | GarmentCategory>('all');
   const [query, setQuery] = useState('');
-  const [sortBy, setSortBy] = useState<'newest' | 'formality' | 'worn'>('newest');
+  const [sortBy, setSortBy] = useState<'newest' | 'flattery' | 'formality' | 'worn'>('newest');
+
+  const personalScores = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const g of garments) {
+      map.set(g.id, scoreGarmentForPerson(g, profile));
+    }
+    return map;
+  }, [garments, profile]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -49,6 +60,11 @@ export function WardrobeView({
       );
     });
 
+    if (sortBy === 'flattery') {
+      return [...list].sort(
+        (a, b) => (personalScores.get(b.id) ?? 75) - (personalScores.get(a.id) ?? 75)
+      );
+    }
     if (sortBy === 'formality') {
       return [...list].sort((a, b) => b.formality - a.formality);
     }
@@ -56,7 +72,7 @@ export function WardrobeView({
       return [...list].sort((a, b) => b.wearCount - a.wearCount);
     }
     return list;
-  }, [garments, category, query, sortBy]);
+  }, [garments, category, query, sortBy, personalScores]);
 
   const vectorIndexedCount = garments.filter((g) => g.hasVector).length;
 
@@ -176,10 +192,13 @@ export function WardrobeView({
           <select
             id="wardrobe-sort"
             value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as 'newest' | 'formality' | 'worn')}
+            onChange={(e) =>
+              setSortBy(e.target.value as 'newest' | 'flattery' | 'formality' | 'worn')
+            }
             className="px-3.5 py-2 bg-white border border-black/[0.08] rounded-xl text-[13px] font-medium text-[#1D1D1F] focus:border-[#0071E3] focus:outline-none"
           >
             <option value="newest">Recently Added</option>
+            <option value="flattery">Best for Me</option>
             <option value="formality">Highest Formality</option>
             <option value="worn">Most Worn</option>
           </select>
@@ -230,6 +249,7 @@ export function WardrobeView({
         >
           {filtered.map((item) => {
             const topMatch = companionsByGarment[item.id]?.[0];
+            const flatteryScore = personalScores.get(item.id) ?? 75;
             return (
               <button
                 key={item.id}
@@ -244,6 +264,11 @@ export function WardrobeView({
                     swatchHex={item.colorHex}
                     className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-300 ease-out"
                   />
+                  {profile.blueprint && (
+                    <span className="absolute top-3 right-3 px-2 py-0.5 rounded-md bg-white/90 backdrop-blur-xs text-[11px] font-mono font-medium text-[#1D1D1F] border border-black/[0.06] tabular-nums">
+                      {flatteryScore}% fit
+                    </span>
+                  )}
                 </div>
 
                 <div className="p-5 flex-1 flex flex-col justify-between gap-3">

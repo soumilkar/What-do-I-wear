@@ -33,15 +33,15 @@
         },
         "skinUndertone": {
           "type": "string",
-          "enum": ["Warm", "Cool", "Neutral", "Olive"]
+          "enum": ["Warm", "Cool", "Neutral", "Olive", "Warm Olive", "Cool Olive"]
         },
         "preferredFits": {
           "type": "array",
-          "description": "Up to 6 preferred garment fit styles."
+          "description": "Up to 12 preferred garment fit styles."
         },
         "styleAesthetics": {
           "type": "array",
-          "description": "Up to 6 personal style aesthetics."
+          "description": "Up to 12 personal style aesthetics."
         },
         "budgetRange": {
           "type": "string",

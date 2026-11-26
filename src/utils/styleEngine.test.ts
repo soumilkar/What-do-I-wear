@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   analyzeWardrobeGaps,
+  classifyTopLayerRole,
   computeColorHarmony,
   computeDeterministicVector,
   computeTasteCentroid,
@@ -13,6 +14,9 @@ import {
   findBestCompanions,
   generateCandidateCombinations,
   hexToOklch,
+  inferEffectiveSeason,
+  isSummerUnsuitable,
+  isWinterUnsuitable,
   MAX_BATCH_UPLOAD_FILES,
   scoreGarmentForPerson,
   scoreOutfitForPerson,
@@ -497,5 +501,233 @@ test('computeWardrobeIntelligenceSummary produces accurate category counts, unwo
   assert.ok(summary.blueprintAlignmentAvg >= 60);
   assert.ok(summary.compactDossier.includes('g_new|Rust Silk Camp Shirt'));
 });
+
+test('real multi-layer outfit assembly pairs a Base shirt/tee UNDER sweaters and never emits bare sweaters when base shirts exist', () => {
+  const oxfordBase: Garment = {
+    ...sampleGarments[0],
+    id: 'g_oxford',
+    name: 'White Cotton Oxford Shirt',
+    subCategory: 'Oxford Shirt',
+    primaryColor: 'White',
+    colorHex: '#F9F9F7',
+    undertone: 'Neutral',
+    fabric: 'Crisp cotton oxford weave',
+    fabricWeight: 'Lightweight',
+    texture: 'Crisp woven cotton',
+    fit: 'Tailored',
+    silhouette: 'Button-down collar shirt',
+    formality: 6,
+    seasons: ['Spring', 'Summer', 'Autumn', 'Winter', 'All-Season'],
+    layeringRole: 'Base',
+  };
+
+  const merinoSweater: Garment = {
+    ...sampleGarments[0],
+    id: 'g_sweater',
+    name: 'Navy Merino Crewneck Sweater',
+    subCategory: 'Sweater',
+    primaryColor: 'Navy',
+    colorHex: '#1F2C44',
+    undertone: 'Cool',
+    fabric: '100% Merino wool knit',
+    fabricWeight: 'Midweight',
+    texture: 'Fine ribbed wool',
+    fit: 'Relaxed tailored',
+    silhouette: 'Classic pullover sweater',
+    formality: 6,
+    seasons: ['Autumn', 'Winter'],
+    // Even if an older record mis-tagged a sweater as "Base", classifyTopLayerRole must catch it as Mid!
+    layeringRole: 'Base',
+  };
+
+  const closet = [oxfordBase, merinoSweater, sampleGarments[1], sampleGarments[2], sampleGarments[3]];
+  const vectors: Record<string, number[]> = {};
+  for (const g of closet) vectors[g.id] = computeDeterministicVector(g);
+
+  assert.equal(classifyTopLayerRole(oxfordBase), 'base');
+  assert.equal(classifyTopLayerRole(merinoSweater), 'mid');
+
+  const autumnCandidates = generateCandidateCombinations(closet, vectors, {
+    occasion: 'Smart Casual',
+    season: 'Autumn',
+    profile: sampleProfile,
+    maxCandidates: 6,
+  });
+
+  assert.ok(autumnCandidates.length >= 1);
+  // Any candidate containing the sweater MUST also include the oxford base shirt under it
+  const sweaterLooks = autumnCandidates.filter((c) => c.itemIds.includes('g_sweater'));
+  assert.ok(sweaterLooks.length >= 1, 'Expected at least one layered sweater look in Autumn');
+  for (const look of sweaterLooks) {
+    assert.ok(
+      look.itemIds.includes('g_oxford'),
+      `Sweater look ${look.itemIds.join(',')} must include underlayer g_oxford`
+    );
+    // Base shirt should come before Mid sweater in dressing order
+    assert.ok(
+      look.itemIds.indexOf('g_oxford') < look.itemIds.indexOf('g_sweater'),
+      'Expected base shirt to precede mid-layer sweater in dressing order'
+    );
+  }
+
+  // Anchoring the sweater directly must still auto-pair the base shirt underneath
+  const anchoredSweater = generateCandidateCombinations(closet, vectors, {
+    occasion: 'Smart Casual',
+    season: 'Winter',
+    anchorItemId: 'g_sweater',
+    profile: sampleProfile,
+    maxCandidates: 4,
+  });
+  assert.ok(anchoredSweater.length >= 1);
+  assert.ok(
+    anchoredSweater.every((c) => c.itemIds.includes('g_sweater') && c.itemIds.includes('g_oxford')),
+    'Anchoring a sweater must automatically layer a base shirt underneath'
+  );
+});
+
+test('strict Summer thermal filtering infers Summer from customPrompt and hard-excludes sweaters, hoodies, and winter coats', () => {
+  assert.equal(inferEffectiveSeason('All-Season', 'I need something to wear in the summer'), 'Summer');
+  assert.equal(inferEffectiveSeason('All-Season', 'hot humid vacation beach dinner'), 'Summer');
+  assert.equal(inferEffectiveSeason('All-Season', 'freezing snowy winter commute'), 'Winter');
+  assert.equal(inferEffectiveSeason('Autumn', 'smart casual dinner'), 'Autumn');
+
+  const linenShirt: Garment = {
+    ...sampleGarments[0],
+    id: 'g_linen',
+    name: 'Sand Washed Linen Shirt',
+    subCategory: 'Linen Shirt',
+    primaryColor: 'Sand',
+    colorHex: '#D6C8B4',
+    fabric: '100% Breathable Belgian linen',
+    fabricWeight: 'Lightweight',
+    texture: 'Airy slubbed linen weave',
+    silhouette: 'Relaxed camp-collar shirt',
+    seasons: ['Spring', 'Summer'],
+    layeringRole: 'Base',
+  };
+
+  const chinos: Garment = {
+    ...sampleGarments[1],
+    id: 'g_chinos',
+    name: 'Stone Lightweight Cotton Chinos',
+    subCategory: 'Chinos',
+    primaryColor: 'Stone',
+    colorHex: '#C8C2B8',
+    fabric: 'Lightweight cotton twill',
+    fabricWeight: 'Lightweight',
+    seasons: ['Spring', 'Summer', 'All-Season'],
+    layeringRole: 'Bottom',
+  };
+
+  // Sweater mistakenly tagged All-Season by legacy AI
+  const misTaggedSweater: Garment = {
+    ...sampleGarments[0],
+    id: 'g_bad_sweater',
+    name: 'Cable Knit Wool Sweater',
+    subCategory: 'Sweater',
+    fabric: 'Merino wool knit',
+    fabricWeight: 'Midweight',
+    seasons: ['All-Season'],
+    layeringRole: 'Mid',
+  };
+
+  const shorts: Garment = {
+    ...sampleGarments[1],
+    id: 'g_shorts',
+    name: 'Olive Linen Shorts',
+    subCategory: 'Shorts',
+    fabric: 'Lightweight linen',
+    fabricWeight: 'Lightweight',
+    seasons: ['Summer'],
+    layeringRole: 'Bottom',
+  };
+
+  assert.equal(isSummerUnsuitable(misTaggedSweater), true);
+  assert.equal(isSummerUnsuitable(sampleGarments[2]), true); // Heavy camel overcoat
+  assert.equal(isSummerUnsuitable(linenShirt), false);
+  assert.equal(isWinterUnsuitable(shorts), true);
+
+  const mixedCloset = [
+    linenShirt,
+    misTaggedSweater,
+    sampleGarments[0], // Ivory Merino Crewneck
+    chinos,
+    sampleGarments[2], // Camel Overcoat
+    sampleGarments[3], // Espresso Loafers
+  ];
+  const vectors: Record<string, number[]> = {};
+  for (const g of mixedCloset) vectors[g.id] = computeDeterministicVector(g);
+
+  // User leaves dropdown on "All-Season" and types "something to wear in the summer"
+  const summerFromPrompt = generateCandidateCombinations(mixedCloset, vectors, {
+    occasion: 'Smart Casual',
+    season: 'All-Season',
+    customPrompt: 'Looking for something to wear in the summer',
+    profile: sampleProfile,
+    maxCandidates: 5,
+  });
+
+  assert.ok(summerFromPrompt.length >= 1, 'Expected breathable summer combinations');
+  assert.equal(summerFromPrompt[0].effectiveSeason, 'Summer');
+  for (const cand of summerFromPrompt) {
+    assert.ok(!cand.itemIds.includes('g_bad_sweater'), 'Sweater must NEVER appear in Summer');
+    assert.ok(!cand.itemIds.includes('g1'), 'Merino crewneck must NEVER appear in Summer');
+    assert.ok(!cand.itemIds.includes('g3'), 'Heavy wool overcoat must NEVER appear in Summer');
+    assert.ok(cand.itemIds.includes('g_linen'), 'Breathable linen shirt must be selected');
+  }
+});
+
+test('portrait bestColorHexes, avoidColorHexes, and expanded styleAesthetics drive personal flattery scoring', () => {
+  const portraitProfile: UserProfile = {
+    ...sampleProfile,
+    skinUndertone: 'Warm Olive',
+    styleAesthetics: ['Old Money / Heritage', 'Mediterranean Resort'],
+    blueprint: {
+      summary: 'Warm Olive Deep Autumn look with golden undertones.',
+      visualProfile: 'Medium-tan warm olive skin with dark brown hair and warm brown eyes.',
+      colorSeason: 'Deep Autumn',
+      contrastLevel: 'Medium-High',
+      bestColors: ['Forest Olive', 'Terracotta', 'Warm Cream'],
+      bestColorHexes: ['#4B5842', '#B85D3B', '#F2E8D5'],
+      avoidColors: ['Icy Lilac', 'Neon Cyan'],
+      avoidColorHexes: ['#D4B8F0', '#00F0FF'],
+      idealSilhouettes: ['Tailored knit', 'Relaxed pleated trouser'],
+      proportionTips: ['Highlight vertical line with tonal layering.'],
+      recommendedFabrics: ['Linen', 'Cashmere', 'Brushed cotton'],
+      photoAnalyzed: true,
+      analyzedAt: '2026-11-26T00:00:00Z',
+    },
+  };
+
+  const oliveLinen: Garment = {
+    ...sampleGarments[0],
+    id: 'g_hex_match',
+    name: 'Forest Olive Linen Polo',
+    primaryColor: 'Moss',
+    colorHex: '#4E5B45', // Very close OKLCH to #4B5842 even though name says Moss!
+    undertone: 'Warm',
+    fabric: 'Washed Italian linen',
+    fit: 'Tailored',
+  };
+
+  const icyLilac: Garment = {
+    ...sampleGarments[0],
+    id: 'g_hex_clash',
+    name: 'Pale Pastel Tee',
+    primaryColor: 'Lavender Mist',
+    colorHex: '#D6B9F2', // Very close OKLCH to avoidColorHexes #D4B8F0
+    undertone: 'Cool',
+    fabric: 'Polyester jersey',
+    fit: 'Oversized',
+  };
+
+  const matchScore = scoreGarmentForPerson(oliveLinen, portraitProfile);
+  const clashScore = scoreGarmentForPerson(icyLilac, portraitProfile);
+  assert.ok(
+    matchScore >= clashScore + 22,
+    `Expected OKLCH hex match (${matchScore}) >= clash (${clashScore}) + 22`
+  );
+});
+
 
 

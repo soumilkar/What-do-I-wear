@@ -29,14 +29,19 @@ import {
   reanalyzeGarmentInCloud,
   replaceRankedCombinationsInCloud,
   saveOutfitToCloud,
+  saveProfileAnalysisInCloud,
   subscribeUserWorkspace,
   updateGarmentInCloud,
-  updateProfileBlueprintInCloud,
   updateProfileInCloud,
   updateProfilePhotoInCloud,
 } from './lib/cloudWardrobe';
 import { apiJson } from './lib/apiClient';
-import { auth, signOutUser } from './lib/firebase';
+import {
+  auth,
+  reloadAndRefreshUser,
+  resendVerificationEmail,
+  signOutUser,
+} from './lib/firebase';
 import type {
   AIProfileBlueprint,
   Garment,
@@ -49,7 +54,7 @@ import type {
 import { compressImageToDataUrl } from './utils/imageCompress';
 
 /**
- * Strips heavy base64 data URLs before sending wardrobe metadata to text-only AI endpoints
+ * Strips heavy base64 data URLs before sending wardrobe metadata to AI endpoints
  * so 45-100 item cloud wardrobes send ~25 KB instead of 8-18 MB (avoiding 413 Payload Too Large).
  */
 function stripGarmentImages(garments: Garment[]): Garment[] {
@@ -58,6 +63,20 @@ function stripGarmentImages(garments: Garment[]): Garment[] {
 
 function stripProfilePhoto(profile: UserProfile): UserProfile {
   return { ...profile, photoUrl: '' };
+}
+
+/**
+ * Extracts a compact portrait image payload from the user's cloud-saved portrait data URL
+ * so Combinations, Studio Critique, and Shopping Advisor can actually see the user multimodally.
+ */
+function extractPortraitPayload(
+  profile: UserProfile
+): { base64: string; mimeType: string } | null {
+  if (!profile.photoUrl || !profile.photoUrl.startsWith('data:')) return null;
+  const m = profile.photoUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!m) return null;
+  if (m[2].length > 250_000) return null;
+  return { mimeType: m[1], base64: m[2] };
 }
 
 export default function App() {
@@ -74,6 +93,11 @@ export default function App() {
   const [advisorPrefill, setAdvisorPrefill] = useState<string>('');
   const [toast, setToast] = useState<string | null>(null);
 
+  const [emailVerifiedFlag, setEmailVerifiedFlag] = useState(false);
+  const [checkingVerify, setCheckingVerify] = useState(false);
+  const [resendingVerify, setResendingVerify] = useState(false);
+  const [verifyNotice, setVerifyNotice] = useState<string | null>(null);
+
   // Propagate fatal Firestore permission/quota errors cleanly to ErrorBoundary
   if (syncError) {
     throw syncError;
@@ -83,24 +107,26 @@ export default function App() {
     setToast(msg);
     setTimeout(() => {
       setToast((prev) => (prev === msg ? null : prev));
-    }, 3200);
+    }, 3600);
   }, []);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (nextUser) => {
       setUser(nextUser);
+      setEmailVerifiedFlag(Boolean(nextUser?.emailVerified));
       setAuthReady(true);
       if (!nextUser) {
         setWorkspace(null);
         setInspectedGarmentId(null);
         setUploadOpen(false);
+        setVerifyNotice(null);
       }
     });
     return unsub;
   }, []);
 
   useEffect(() => {
-    if (!authReady || !user) return;
+    if (!authReady || !user || !emailVerifiedFlag) return;
     let active = true;
     let unsubscribe: (() => void) | null = null;
 
@@ -130,7 +156,7 @@ export default function App() {
       active = false;
       if (unsubscribe) unsubscribe();
     };
-  }, [authReady, user]);
+  }, [authReady, user, emailVerifiedFlag]);
 
   if (!authReady) {
     return (
@@ -147,6 +173,92 @@ export default function App() {
 
   if (!user) {
     return <AuthScreen />;
+  }
+
+  if (!emailVerifiedFlag) {
+    return (
+      <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] flex items-center justify-center p-6">
+        <div className="surface-card rounded-[26px] p-7 sm:p-9 max-w-md w-full space-y-5 text-center">
+          <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-[#6E6E73]">
+            Verify Your Email
+          </p>
+          <h1 className="font-display text-[26px] font-semibold tracking-[-0.025em] text-[#1D1D1F]">
+            Check your inbox to unlock your private wardrobe.
+          </h1>
+          <p className="text-[14px] leading-relaxed text-[#6E6E73]">
+            We sent a verification link to{' '}
+            <span className="font-medium text-[#1D1D1F]">{user.email}</span>. Click that link so
+            your private cloud wardrobe stays protected, then tap continue below.
+          </p>
+
+          {verifyNotice && (
+            <div className="px-4 py-2.5 rounded-xl bg-[#F5F5F7] border border-black/[0.08] text-[13px] text-[#1D1D1F]">
+              {verifyNotice}
+            </div>
+          )}
+
+          <div className="space-y-2.5 pt-1">
+            <button
+              type="button"
+              disabled={checkingVerify}
+              onClick={async () => {
+                setCheckingVerify(true);
+                setVerifyNotice(null);
+                try {
+                  const ok = await reloadAndRefreshUser(user);
+                  if (ok) {
+                    setEmailVerifiedFlag(true);
+                  } else {
+                    setVerifyNotice(
+                      'Not verified yet. Open the link in your email (check spam too), then tap again.'
+                    );
+                  }
+                } catch (err) {
+                  setVerifyNotice(
+                    err instanceof Error ? err.message : 'Unable to check verification status.'
+                  );
+                } finally {
+                  setCheckingVerify(false);
+                }
+              }}
+              className="w-full py-3 rounded-full bg-[#1D1D1F] text-white text-[14px] font-medium hover:bg-[#3A3A3C] disabled:opacity-50 transition-colors"
+            >
+              {checkingVerify ? 'Checking verification...' : "I've Verified — Continue"}
+            </button>
+
+            <button
+              type="button"
+              disabled={resendingVerify}
+              onClick={async () => {
+                setResendingVerify(true);
+                setVerifyNotice(null);
+                try {
+                  await resendVerificationEmail(user);
+                  setVerifyNotice(`Fresh verification email sent to ${user.email}.`);
+                } catch (err) {
+                  setVerifyNotice(
+                    err instanceof Error ? err.message : 'Wait a moment before resending.'
+                  );
+                } finally {
+                  setResendingVerify(false);
+                }
+              }}
+              className="w-full py-2.5 rounded-full border border-black/[0.12] text-[13px] font-medium text-[#1D1D1F] hover:bg-black/[0.03] disabled:opacity-50 transition-colors"
+            >
+              {resendingVerify ? 'Sending...' : 'Resend Verification Email'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void signOutUser()}
+              className="w-full py-2 text-[13px] font-medium text-[#6E6E73] hover:text-[#1D1D1F]"
+            >
+              Sign out &amp; use another account
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   const data = workspace?.bootstrap ?? null;
@@ -238,26 +350,33 @@ export default function App() {
     explorationMode?: 'best' | 'fresh';
   }) => {
     if (!data) return;
-    const res = await apiJson<{ combinations: OutfitCombination[]; modelUsed: string }>(
-      '/api/ai/rank-combinations',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          garments: stripGarmentImages(data.garments),
-          vectors,
-          profile: stripProfilePhoto(data.profile),
-          savedOutfits: data.savedOutfits,
-          ...opts,
-        }),
-      }
-    );
+    const portraitImage = extractPortraitPayload(data.profile);
+    const res = await apiJson<{
+      combinations: OutfitCombination[];
+      modelUsed: string;
+      effectiveSeason?: SeasonTag;
+    }>('/api/ai/rank-combinations', {
+      method: 'POST',
+      body: JSON.stringify({
+        garments: stripGarmentImages(data.garments),
+        vectors,
+        profile: stripProfilePhoto(data.profile),
+        portraitImage,
+        savedOutfits: data.savedOutfits,
+        ...opts,
+      }),
+    });
 
     await replaceRankedCombinationsInCloud(
       user.uid,
       data.rankedCombinations.map((c) => c.id),
       res.combinations
     );
-    showToast('Ranked fresh personalized combinations.');
+    showToast(
+      res.effectiveSeason && res.effectiveSeason !== opts.season
+        ? `Ranked ${res.effectiveSeason} combinations tailored to your profile.`
+        : 'Ranked fresh personalized combinations.'
+    );
   };
 
   const handleSaveOutfit = async (payload: Partial<OutfitCombination>) => {
@@ -281,6 +400,7 @@ export default function App() {
     const items = itemIds
       .map((id) => data.garments.find((g) => g.id === id))
       .filter((g): g is Garment => Boolean(g));
+    const portraitImage = extractPortraitPayload(data.profile);
     return apiJson<{
       score: number;
       rationale: string;
@@ -293,6 +413,7 @@ export default function App() {
       body: JSON.stringify({
         items: stripGarmentImages(items),
         profile: stripProfilePhoto(data.profile),
+        portraitImage,
         occasion,
       }),
     });
@@ -315,15 +436,17 @@ export default function App() {
     await updateProfileInCloud(user.uid, patch);
   };
 
-  const handleAnalyzeBlueprint = async (overridePhoto?: {
-    base64: string;
-    mimeType: string;
+  const handleAnalyzeBlueprint = async (options?: {
+    overridePhoto?: { base64: string; mimeType: string; dataUrl?: string };
+    profileSnapshot?: UserProfile;
   }) => {
     if (!data) return;
-    let photoBase64: string | null = overridePhoto?.base64 ?? null;
-    let photoMimeType: string | null = overridePhoto?.mimeType ?? null;
-    if (!photoBase64 && data.profile.photoUrl.startsWith('data:')) {
-      const m = data.profile.photoUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+    const activeProfile = options?.profileSnapshot ?? data.profile;
+    let photoBase64: string | null = options?.overridePhoto?.base64 ?? null;
+    let photoMimeType: string | null = options?.overridePhoto?.mimeType ?? null;
+
+    if (!photoBase64 && activeProfile.photoUrl.startsWith('data:')) {
+      const m = activeProfile.photoUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
       if (m) {
         photoMimeType = m[1];
         photoBase64 = m[2];
@@ -343,56 +466,46 @@ export default function App() {
     }>('/api/ai/analyze-profile', {
       method: 'POST',
       body: JSON.stringify({
-        profile: photoBase64 ? stripProfilePhoto(data.profile) : data.profile,
+        profile: photoBase64 ? stripProfilePhoto(activeProfile) : activeProfile,
         photoBase64,
         photoMimeType,
       }),
     });
 
-    if (res.suggestedProfile) {
-      const patch: Partial<UserProfile> = {};
-      if (res.suggestedProfile.skinUndertone) {
-        patch.skinUndertone = res.suggestedProfile.skinUndertone;
-      }
-      if (res.suggestedProfile.bodyType?.trim()) {
-        patch.bodyType = res.suggestedProfile.bodyType.trim();
-      }
-      if (
-        Array.isArray(res.suggestedProfile.preferredFits) &&
-        res.suggestedProfile.preferredFits.length > 0
-      ) {
-        patch.preferredFits = res.suggestedProfile.preferredFits;
-      }
-      if (
-        Array.isArray(res.suggestedProfile.styleAesthetics) &&
-        res.suggestedProfile.styleAesthetics.length > 0
-      ) {
-        patch.styleAesthetics = res.suggestedProfile.styleAesthetics;
-      }
-      if (res.suggestedProfile.stylingGoals?.trim()) {
-        patch.stylingGoals = res.suggestedProfile.stylingGoals.trim();
-      }
-      if (Object.keys(patch).length > 0) {
-        await updateProfileInCloud(user.uid, patch);
-      }
-    }
+    // Single atomic Firestore write so photo, AI blueprint, and auto-filled profile fields are saved together
+    await saveProfileAnalysisInCloud(user.uid, {
+      photoUrl: options?.overridePhoto?.dataUrl,
+      blueprint: res.blueprint,
+      suggestedProfile: res.suggestedProfile,
+    });
 
-    await updateProfileBlueprintInCloud(user.uid, res.blueprint);
     showToast(
-      'AI analyzed your look, auto-filled your style profile, and personalized recommendations site-wide.'
+      res.blueprint.photoAnalyzed
+        ? 'Portrait analyzed & saved to cloud—your style profile and all recommendations are now deeply personalized.'
+        : 'Style profile analyzed & saved to cloud—all recommendations updated.'
     );
   };
 
-  const handleUploadProfilePhoto = async (file: File) => {
+  const handleUploadProfilePhoto = async (file: File, currentForm?: UserProfile) => {
     const compressed = await compressImageToDataUrl(file, 560, 185_000);
+    // Persist photo immediately first so it is never lost even if AI is rate-limited
     await updateProfilePhotoInCloud(user.uid, compressed.dataUrl);
     try {
       await handleAnalyzeBlueprint({
-        base64: compressed.base64,
-        mimeType: compressed.mimeType,
+        overridePhoto: {
+          base64: compressed.base64,
+          mimeType: compressed.mimeType,
+          dataUrl: compressed.dataUrl,
+        },
+        profileSnapshot: currentForm
+          ? { ...currentForm, photoUrl: compressed.dataUrl }
+          : undefined,
       });
-    } catch {
-      showToast('Portrait synced to cloud. Tap "Analyze My Look with AI" to refresh your style profile.');
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'AI analysis failed';
+      throw new Error(
+        `Portrait saved to cloud, but automatic AI analysis could not finish (${reason}). Tap "Analyze My Look with AI" to retry.`
+      );
     }
   };
 
@@ -409,6 +522,7 @@ export default function App() {
         : 'Should I buy this item? Analyze how well it fits my wardrobe, colors, and proportions.');
 
     const strippedHistory = data.advisorMessages.map(({ attachedImages: _imgs, ...rest }) => rest);
+    const portraitImage = extractPortraitPayload(data.profile);
 
     const reply = await apiJson<{
       content: string;
@@ -423,6 +537,7 @@ export default function App() {
         garments: stripGarmentImages(data.garments),
         savedOutfits: data.savedOutfits,
         profile: stripProfilePhoto(data.profile),
+        portraitImage,
         images: safeImages.map((img, idx) => ({
           base64: img.base64,
           mimeType: img.mimeType,
@@ -498,6 +613,7 @@ export default function App() {
             {activeTab === 'wardrobe' && (
               <WardrobeView
                 garments={data.garments}
+                profile={data.profile}
                 savedOutfitCount={data.savedOutfits.length}
                 rankedCount={data.rankedCombinations.length}
                 companionsByGarment={data.companionsByGarment}
@@ -561,8 +677,10 @@ export default function App() {
               <ProfileView
                 profile={data.profile}
                 onSaveProfile={handleSaveProfile}
-                onUploadPhoto={handleUploadProfilePhoto}
-                onAnalyzeBlueprint={() => handleAnalyzeBlueprint()}
+                onUploadPhoto={(file, currentForm) => handleUploadProfilePhoto(file, currentForm)}
+                onAnalyzeBlueprint={(currentForm) =>
+                  handleAnalyzeBlueprint({ profileSnapshot: currentForm })
+                }
               />
             )}
           </>

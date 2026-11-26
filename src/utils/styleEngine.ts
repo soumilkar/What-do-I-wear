@@ -409,9 +409,188 @@ const MATERIAL_PAIR_DELTA: Partial<Record<FabricFamily, Partial<Record<FabricFam
   tech: { cotton: 3, denim: 2, knit: 1, wool: -3, silk: -6, linen: -3 },
 };
 
+// ============================================================================
+// 2B. REAL-WORLD LAYERING ROLES & SEASONAL THERMAL PHYSICS
+// ============================================================================
+
+const MID_LAYER_REGEX =
+  /\b(sweater|pullover|cardigan|knitwear|knit\s*(top|crew|v-?neck|vest|jumper)?|jumper|hoodie|sweatshirt|quarter[- ]?zip|half[- ]?zip|sweater[- ]?vest|knit[- ]?vest|gilet|fleece|shrug|poncho|crewneck\s*knit|cable[- ]?knit)\b/i;
+
+const STANDALONE_BASE_REGEX =
+  /\b(t-?shirt|tee|oxford|dress\s*shirt|button[- ]?(down|up)|poplin\s*shirt|linen\s*shirt|camp\s*shirt|polo|tank|singlet|camisole|blouse|henley|bodysuit|undershirt)\b/i;
+
+const COLLARED_OR_CRISP_BASE_REGEX =
+  /\b(oxford|button[- ]?(down|up)|dress\s*shirt|poplin|chambray|t-?shirt|tee|polo|henley|collared)\b/i;
+
+const OPEN_OR_HEAVY_MID_REGEX =
+  /\b(cardigan|vest|gilet|quarter[- ]?zip|half[- ]?zip|zip[- ]?(up|sweater)|hoodie|sweatshirt|sweater|pullover|jumper|cable[- ]?knit|fleece)\b/i;
+
+const COLD_WEATHER_GARMENT_REGEX =
+  /\b(sweater|pullover|cardigan|knitwear|jumper|turtleneck|hoodie|sweatshirt|fleece|cashmere|merino|mohair|alpaca|chunky\s*knit|cable\s*knit|wool\s*(coat|overcoat|blazer|sweater|knit|pant|trouser|jacket)|flannel|tweed|corduroy|velvet|shearling|puffer|parka|overcoat|peacoat|topcoat|trench|bomber|leather\s*jacket|suede\s*jacket|beanie|scarf|gloves|winter\s*boot|chelsea\s*boot)\b/i;
+
+const SUMMER_ONLY_GARMENT_REGEX =
+  /\b(shorts?|tank\s*top|sleeveless|camisole|sandals?|flip[- ]?flops?|slides?|espadrilles?|halter|tube\s*top|swim)\b/i;
+
+/**
+ * Classifies a 'tops' garment into its real-world dressing layer:
+ * - 'base': shirts, tees, oxfords, polos, tanks, blouses worn directly against skin
+ * - 'mid': sweaters, pullovers, cardigans, knit vests, hoodies, sweatshirts layered over a base
+ */
+export function classifyTopLayerRole(garment: Garment): 'base' | 'mid' {
+  if (garment.category !== 'tops') {
+    return garment.layeringRole === 'Mid' ? 'mid' : 'base';
+  }
+  const text = `${garment.name} ${garment.subCategory} ${garment.silhouette} ${garment.texture}`;
+  if (MID_LAYER_REGEX.test(text)) {
+    return 'mid';
+  }
+  if (STANDALONE_BASE_REGEX.test(text)) {
+    return 'base';
+  }
+  if (garment.layeringRole === 'Mid') {
+    return 'mid';
+  }
+  // Thick wool/cashmere/knit tops default to mid-layer
+  if (
+    garment.fabricWeight === 'Heavyweight' &&
+    /\b(wool|cashmere|merino|knit|fleece|alpaca|mohair)\b/i.test(`${garment.fabric} ${garment.texture}`)
+  ) {
+    return 'mid';
+  }
+  return 'base';
+}
+
+/**
+ * True when a top is a sweater, cardigan, vest, hoodie, or knit mid-layer that should be worn
+ * WITH a base underlayer (shirt/tee) beneath it whenever the user owns base tops.
+ */
+export function requiresUnderlayer(garment: Garment): boolean {
+  if (garment.category !== 'tops') return false;
+  if (classifyTopLayerRole(garment) !== 'mid') return false;
+  const text = `${garment.name} ${garment.subCategory} ${garment.silhouette}`;
+  // Slim lightweight fine-gauge turtlenecks can stand alone if needed; all sweaters/cardigans/vests/hoodies layer
+  if (/\bturtleneck\b/i.test(text) && garment.fabricWeight === 'Lightweight') {
+    return false;
+  }
+  return OPEN_OR_HEAVY_MID_REGEX.test(text) || garment.layeringRole === 'Mid';
+}
+
+/**
+ * Infers the effective season by respecting explicit weather/season intent written in customPrompt
+ * (e.g. typing "something for summer" overrides a default "All-Season" dropdown).
+ */
+export function inferEffectiveSeason(selectedSeason: SeasonTag, customPrompt?: string): SeasonTag {
+  const prompt = (customPrompt || '').trim().toLowerCase();
+  if (prompt) {
+    if (
+      /\b(summer|hot|humid|heatwave|heat|tropical|beach|sweltering|warm\s*weather|sunny|resort|vacation|30\s*c|35\s*c|90\s*f|85\s*f)\b/.test(
+        prompt
+      )
+    ) {
+      return 'Summer';
+    }
+    if (
+      /\b(winter|cold|freezing|snow|icy|subzero|bundle\s*up|chilly\s*winter|frost|below\s*zero)\b/.test(
+        prompt
+      )
+    ) {
+      return 'Winter';
+    }
+    if (/\b(autumn|fall\s*(vibe|look|outfit|weather|season)?|crisp\s*fall|cool\s*autumn)\b/.test(prompt)) {
+      return 'Autumn';
+    }
+    if (/\b(spring|mild\s*weather|transitional\s*spring)\b/.test(prompt)) {
+      return 'Spring';
+    }
+  }
+  return selectedSeason;
+}
+
+/**
+ * Strict thermal check: returns true if a garment is thermally unsuitable for hot Summer weather
+ * (sweaters, knitwear, hoodies, fleece, wool/cashmere layers, heavy coats, corduroy/flannel, heavyweight fabrics).
+ */
+export function isSummerUnsuitable(garment: Garment): boolean {
+  const text = `${garment.name} ${garment.subCategory} ${garment.fabric} ${garment.texture} ${garment.silhouette}`;
+
+  // Any sweater / knit / cardigan / hoodie / fleece / mid-layer top is unsuitable for Summer
+  if (garment.category === 'tops' && classifyTopLayerRole(garment) === 'mid') {
+    return true;
+  }
+
+  // Heavyweight items are always unsuitable for Summer
+  if (garment.fabricWeight === 'Heavyweight') {
+    return true;
+  }
+
+  // Outerwear in Summer is only viable if explicitly lightweight & breathable (e.g. linen overshirt)
+  if (garment.category === 'outerwear') {
+    if (garment.fabricWeight !== 'Lightweight') return true;
+    if (COLD_WEATHER_GARMENT_REGEX.test(text)) return true;
+    const summerTagged = garment.seasons.includes('Summer') || garment.seasons.includes('All-Season');
+    return !summerTagged;
+  }
+
+  // Cold-weather fabrics/items (wool knit, cashmere, flannel, corduroy, tweed, fleece, shearling, puffer)
+  if (COLD_WEATHER_GARMENT_REGEX.test(text)) {
+    // Allow lightweight tropical/summer worsted wool trousers if explicitly Lightweight + Summer/All-Season
+    const isLightTropicalTrouser =
+      garment.category === 'bottoms' &&
+      garment.fabricWeight === 'Lightweight' &&
+      (garment.seasons.includes('Summer') || garment.seasons.includes('All-Season')) &&
+      !/\b(flannel|tweed|corduroy|fleece|velvet|heavy)\b/i.test(text);
+    if (!isLightTropicalTrouser) return true;
+  }
+
+  // Strictly Autumn/Winter tagged garments with neither Summer nor All-Season
+  if (
+    garment.seasons.length > 0 &&
+    !garment.seasons.includes('Summer') &&
+    !garment.seasons.includes('All-Season') &&
+    (garment.seasons.includes('Winter') || garment.seasons.includes('Autumn'))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Strict thermal check: returns true if a garment is unsuitable for cold Winter weather
+ * (shorts, tank tops, sleeveless tops, sandals, purely Summer-tagged pieces).
+ */
+export function isWinterUnsuitable(garment: Garment): boolean {
+  const text = `${garment.name} ${garment.subCategory} ${garment.silhouette}`;
+  if (SUMMER_ONLY_GARMENT_REGEX.test(text)) {
+    return true;
+  }
+  if (
+    garment.seasons.length === 1 &&
+    garment.seasons[0] === 'Summer'
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Orders outfit garments in natural dressing order:
+ * Base Top -> Mid Layer (Sweater/Cardigan/Vest) -> Outerwear -> Bottom -> Footwear -> Accessory.
+ */
+export function sortOutfitByDressingOrder(items: Garment[]): Garment[] {
+  const rank = (g: Garment): number => {
+    if (g.category === 'tops') return classifyTopLayerRole(g) === 'base' ? 1 : 2;
+    if (g.category === 'outerwear') return 3;
+    if (g.category === 'bottoms') return 4;
+    if (g.category === 'footwear') return 5;
+    return 6;
+  };
+  return [...items].sort((a, b) => rank(a) - rank(b));
+}
+
 /**
  * Evaluates full-outfit Silhouette Balance (Big-over-Fitted / Rule of Thirds),
- * Layering Fabric-Weight Physics, and Tactile Material Matrix (0-100).
+ * Multi-Layer Physics (Base under Mid under Outer), and Tactile Material Matrix (0-100).
  */
 export function evaluateProportionAndLayering(
   items: Garment[],
@@ -424,15 +603,20 @@ export function evaluateProportionAndLayering(
   let score = 80;
   const notes: string[] = [];
 
-  const top = items.find((i) => i.category === 'tops');
+  const tops = items.filter((i) => i.category === 'tops');
+  const baseTop = tops.find((t) => classifyTopLayerRole(t) === 'base') ?? tops[0];
+  const midLayer = tops.find((t) => classifyTopLayerRole(t) === 'mid');
   const bottom = items.find((i) => i.category === 'bottoms');
   const outer = items.find((i) => i.category === 'outerwear');
   const footwear = items.find((i) => i.category === 'footwear');
   const isStreetwear = occasion === 'Streetwear';
 
+  // Dominant upper-body piece for top-to-bottom proportion comparison
+  const visibleTop = midLayer ?? baseTop;
+
   // 1. Top-to-Bottom Volume Balance (Editorial Rule of Proportions)
-  if (top && bottom) {
-    const topVol = classifyVolume(top);
+  if (visibleTop && bottom) {
+    const topVol = classifyVolume(visibleTop);
     const botVol = classifyVolume(bottom);
 
     if (
@@ -459,14 +643,53 @@ export function evaluateProportionAndLayering(
     }
   }
 
-  // 2. Layering Physics: Outerwear weight >= inner top weight
-  if (top && outer) {
-    const topW = FABRIC_WEIGHT_RANK[top.fabricWeight] ?? 2;
-    const outerW = FABRIC_WEIGHT_RANK[outer.fabricWeight] ?? 2;
-    if (outerW < topW) {
+  // 2A. Base-under-Mid Layering Physics (Shirt/Tee under Sweater/Cardigan/Vest)
+  if (midLayer && baseTop && baseTop.id !== midLayer.id) {
+    const baseW = FABRIC_WEIGHT_RANK[baseTop.fabricWeight] ?? 1;
+    const midW = FABRIC_WEIGHT_RANK[midLayer.fabricWeight] ?? 2;
+    const volOrder: Record<SilhouetteVolume, number> = {
+      slim: 1,
+      tailored: 2,
+      relaxed: 3,
+      oversized: 4,
+    };
+    const baseVolRank = volOrder[classifyVolume(baseTop)];
+    const midVolRank = volOrder[classifyVolume(midLayer)];
+
+    if (baseW > midW) {
       score -= 10;
-      notes.push('outer layer is lighter than inner knit');
-    } else if (outerW > topW) {
+      notes.push('inner shirt is heavier than outer knit layer');
+    } else {
+      score += 6;
+      notes.push('intentional base-under-knit layering');
+    }
+
+    if (baseVolRank > midVolRank + 1) {
+      score -= 12;
+      notes.push('inner base layer is too bulky under slim mid-layer');
+    } else if (baseVolRank <= midVolRank) {
+      score += 5;
+    }
+
+    const baseText = `${baseTop.name} ${baseTop.subCategory} ${baseTop.silhouette}`;
+    if (COLLARED_OR_CRISP_BASE_REGEX.test(baseText)) {
+      score += 4;
+    }
+  } else if (midLayer && (!baseTop || baseTop.id === midLayer.id) && requiresUnderlayer(midLayer)) {
+    // Bare sweater/cardigan/vest with no underlayer
+    score -= 11;
+    notes.push('missing a shirt or tee underlayer beneath knitwear');
+  }
+
+  // 2B. Outerwear Weight Physics: Outerwear weight >= inner top/mid weight
+  const innerRef = midLayer ?? baseTop;
+  if (innerRef && outer) {
+    const innerW = FABRIC_WEIGHT_RANK[innerRef.fabricWeight] ?? 2;
+    const outerW = FABRIC_WEIGHT_RANK[outer.fabricWeight] ?? 2;
+    if (outerW < innerW) {
+      score -= 10;
+      notes.push('outer layer is lighter than inner layer');
+    } else if (outerW > innerW) {
       score += 6;
       notes.push('structured weight-stepped layering');
     } else {
@@ -730,23 +953,62 @@ export function scorePairCompatibility(
   };
 }
 
+function scoreAestheticAlignment(garment: Garment, aesthetics: string[]): number {
+  if (!aesthetics || aesthetics.length === 0) return 0;
+  const text = `${garment.name} ${garment.subCategory} ${garment.fabric} ${garment.fit} ${garment.silhouette} ${garment.pattern}`.toLowerCase();
+  const vol = classifyVolume(garment);
+  const oklch = hexToOklch(garment.colorHex);
+  const neutralOrEarth = isPerceptualNeutral(oklch) || isEarthNeutral(oklch);
+  let bestDelta = 0;
+
+  for (const raw of aesthetics) {
+    const a = raw.toLowerCase();
+    let d = 0;
+    if (a.includes('quiet luxury') || a.includes('old money') || a.includes('heritage')) {
+      if (neutralOrEarth && garment.formality >= 5 && /\b(wool|cashmere|merino|linen|silk|calfskin|suede|cotton|twill|oxford|loafer|trouser|blazer|overcoat)\b/.test(text)) d += 6;
+      else if (/\b(graphic|neon|distressed|ripped|mesh)\b/.test(text)) d -= 5;
+    } else if (a.includes('tailor') || a.includes('ivy') || a.includes('preppy') || a.includes('smart casual')) {
+      if (garment.formality >= 5 && (vol === 'tailored' || vol === 'slim' || /\b(oxford|blazer|chino|trouser|loafer|polo|cardigan|knit)\b/.test(text))) d += 6;
+    } else if (a.includes('streetwear')) {
+      if (garment.formality <= 6 && (vol === 'oversized' || vol === 'relaxed' || /\b(hoodie|sneaker|denim|cargo|bomber|tee|sweatshirt|wide|boxy)\b/.test(text))) d += 6;
+    } else if (a.includes('minimal') || a.includes('scandi')) {
+      if (neutralOrEarth && garment.pattern.toLowerCase().includes('solid')) d += 6;
+    } else if (a.includes('dark academia')) {
+      if (oklch.L <= 0.55 && /\b(wool|tweed|corduroy|oxford|knit|loafer|blazer|trouser|cardigan|plaid|herringbone)\b/.test(text)) d += 6;
+    } else if (a.includes('workwear') || a.includes('utilitarian')) {
+      if (/\b(denim|canvas|twill|chore|chino|heavy|boot|flannel|corduroy|cargo|overshirt|cotton)\b/.test(text)) d += 6;
+    } else if (a.includes('mediterranean') || a.includes('resort') || a.includes('bohemian')) {
+      if (/\b(linen|cotton|camp|relaxed|flowy|draped|loafer|espadrille|knitted\s*polo|ivory|cream|sand|olive|terracotta)\b/.test(text)) d += 6;
+    } else if (a.includes('techwear') || a.includes('gorpcore') || a.includes('athleisure') || a.includes('sporty')) {
+      if (/\b(nylon|technical|shell|fleece|zip|sneaker|runner|jogger|track|stretch|jersey|hoodie)\b/.test(text)) d += 6;
+    } else if (a.includes('rock') || a.includes('edgy') || a.includes('avant-garde')) {
+      if (oklch.L <= 0.35 || /\b(leather|black|boot|denim|structured|draped|asymmetrical|silver)\b/.test(text)) d += 6;
+    } else if (a.includes('vintage') || a.includes('retro')) {
+      if (/\b(denim|corduroy|suede|pleated|camp|knit|polo|bomber|leather|loafer)\b/.test(text)) d += 5;
+    }
+    if (d > bestDelta) bestDelta = d;
+  }
+
+  return bestDelta;
+}
+
 /**
  * Scores how flattering a single garment is for THIS specific person (0-100) based on
- * skin undertone, 12-season AI Color Blueprint (best vs. avoid colors), preferred fits,
- * ideal silhouettes, and recommended fabrics.
+ * skin undertone, 12-season AI Portrait Color Blueprint (both name & perceptual OKLCH hex matching),
+ * preferred fits, style aesthetics, ideal silhouettes, and recommended fabrics.
  */
 export function scoreGarmentForPerson(garment: Garment, profile?: UserProfile | null): number {
   if (!profile) return 75;
 
-  let score = 72;
+  let score = 71;
 
   // 1. Skin undertone vs. garment undertone alignment
   const skin = profile.skinUndertone;
-  if (skin === 'Warm') {
+  if (skin === 'Warm' || skin === 'Warm Olive') {
     if (garment.undertone === 'Warm') score += 9;
     else if (garment.undertone === 'Neutral') score += 5;
     else score -= 5;
-  } else if (skin === 'Cool') {
+  } else if (skin === 'Cool' || skin === 'Cool Olive') {
     if (garment.undertone === 'Cool') score += 9;
     else if (garment.undertone === 'Neutral') score += 5;
     else score -= 5;
@@ -759,37 +1021,65 @@ export function scoreGarmentForPerson(garment: Garment, profile?: UserProfile | 
 
   // 2. Preferred fits match
   const fitText = `${garment.fit} ${garment.silhouette}`.toLowerCase();
-  if (profile.preferredFits.some((f) => fitText.includes(f.toLowerCase()))) {
+  if (
+    profile.preferredFits.some((f) => {
+      const words = f.toLowerCase().split(/[\s/]+/).filter((w) => w.length >= 3);
+      return words.some((w) => fitText.includes(w));
+    })
+  ) {
     score += 7;
   }
 
-  // 3. AI Styling Blueprint deep personalization (12-season best/avoid colors, silhouettes, fabrics)
+  // 2B. Style aesthetics alignment
+  score += scoreAestheticAlignment(garment, profile.styleAesthetics);
+
+  // 3. AI Portrait Styling Blueprint deep personalization (12-season colors + OKLCH hex distance + silhouettes + fabrics)
   const bp = profile.blueprint;
   if (bp) {
     const colorText = `${garment.primaryColor} ${garment.secondaryColors.join(' ')}`.toLowerCase();
     const fabricText = `${garment.fabric} ${garment.texture}`.toLowerCase();
+    const oklch = hexToOklch(garment.colorHex);
 
-    const matchesBestColor = bp.bestColors.some((c) => {
+    const matchesBestColorName = bp.bestColors.some((c) => {
       const words = c.toLowerCase().split(/\s+/).filter((w) => w.length >= 3);
       return words.some((w) => colorText.includes(w));
     });
-    const matchesAvoidColor = bp.avoidColors.some((c) => {
+    const matchesAvoidColorName = bp.avoidColors.some((c) => {
       const words = c.toLowerCase().split(/\s+/).filter((w) => w.length >= 3);
       return words.some((w) => colorText.includes(w));
     });
 
-    if (matchesBestColor) score += 13;
-    if (matchesAvoidColor) score -= 16;
+    // Perceptual OKLCH Delta-E against portrait-derived best/avoid hex swatches
+    let matchesBestHex = false;
+    let matchesAvoidHex = false;
+    if (Array.isArray(bp.bestColorHexes) && bp.bestColorHexes.length > 0) {
+      const validHexes = bp.bestColorHexes.filter((h) => /^#[0-9A-Fa-f]{6}$/.test(h));
+      if (validHexes.some((h) => oklchDeltaE(oklch, hexToOklch(h)) <= 0.16)) {
+        matchesBestHex = true;
+      }
+    }
+    if (Array.isArray(bp.avoidColorHexes) && bp.avoidColorHexes.length > 0) {
+      const validHexes = bp.avoidColorHexes.filter((h) => /^#[0-9A-Fa-f]{6}$/.test(h));
+      if (validHexes.some((h) => oklchDeltaE(oklch, hexToOklch(h)) <= 0.14)) {
+        matchesAvoidHex = true;
+      }
+    }
+
+    if (matchesBestColorName || matchesBestHex) {
+      score += matchesBestColorName && matchesBestHex ? 15 : 13;
+    }
+    if (matchesAvoidColorName || matchesAvoidHex) {
+      score -= 17;
+    }
 
     // 12-Season chroma/depth alignment via OKLCH
-    const oklch = hexToOklch(garment.colorHex);
     const seasonLower = bp.colorSeason.toLowerCase();
     if (seasonLower.includes('deep') || seasonLower.includes('dark')) {
       if (oklch.L <= 0.55) score += 3;
-      else if (oklch.L >= 0.85 && oklch.C > 0.08) score -= 2; // Chalky pastels wash out Deep seasons
+      else if (oklch.L >= 0.85 && oklch.C > 0.08) score -= 3;
     } else if (seasonLower.includes('soft') || seasonLower.includes('muted')) {
       if (oklch.C <= 0.13) score += 3;
-      else if (oklch.C >= 0.21) score -= 3; // Neon overpowers Soft seasons
+      else if (oklch.C >= 0.21) score -= 4;
     } else if (seasonLower.includes('bright') || seasonLower.includes('clear')) {
       if (oklch.C >= 0.12 || oklch.L <= 0.22 || oklch.L >= 0.9) score += 3;
     } else if (seasonLower.includes('light')) {
@@ -809,7 +1099,7 @@ export function scoreGarmentForPerson(garment: Garment, profile?: UserProfile | 
     if (matchesFabric) score += 6;
   }
 
-  return Math.max(38, Math.min(99, Math.round(score)));
+  return Math.max(36, Math.min(99, Math.round(score)));
 }
 
 /**
@@ -1032,6 +1322,7 @@ export interface CandidateCombination {
   personalScore: number;
   freshnessScore: number;
   paletteSummary: string;
+  effectiveSeason: SeasonTag;
 }
 
 const OCCASION_FORMALITY_BAND: Record<OccasionType, [number, number]> = {
@@ -1085,21 +1376,23 @@ function scoreGarmentPromptRelevance(
   if (/\b(sharp|sleek|dressy|date|dinner|formal|interview|wedding|elevated|chic|cocktail|gala)\b/.test(rawPrompt)) {
     if (garment.formality >= 6) boost += 2.5;
   }
-  if (/\b(light|breathable|breezy|hot|humid|warm weather|summer|beach)\b/.test(rawPrompt)) {
-    if (garment.fabricWeight === 'Lightweight') boost += 3;
-    if (garment.fabricWeight === 'Heavyweight') boost -= 4;
+  if (/\b(light|breathable|breezy|hot|humid|warm\s*weather|summer|beach|sunny|resort)\b/.test(rawPrompt)) {
+    if (garment.fabricWeight === 'Lightweight') boost += 4;
+    if (isSummerUnsuitable(garment)) boost -= 14;
   }
   if (/\b(cozy|layer|layered|cold|rainy|chilly|freezing|winter|snow)\b/.test(rawPrompt)) {
-    if (garment.fabricWeight === 'Heavyweight' || garment.category === 'outerwear') boost += 3;
+    if (garment.fabricWeight === 'Heavyweight' || garment.category === 'outerwear' || classifyTopLayerRole(garment) === 'mid') {
+      boost += 3;
+    }
     if (garment.fabricWeight === 'Lightweight' && garment.category === 'outerwear') boost -= 2;
   }
-  if (/\b(minimal|clean|quiet luxury|monochrome|tonal|classic|old money)\b/.test(rawPrompt)) {
+  if (/\b(minimal|clean|quiet\s*luxury|monochrome|tonal|classic|old\s*money)\b/.test(rawPrompt)) {
     if (garment.pattern.toLowerCase().includes('solid')) boost += 1.5;
     if (isPerceptualNeutral(hexToOklch(garment.colorHex)) || isEarthNeutral(hexToOklch(garment.colorHex))) {
       boost += 1.5;
     }
   }
-  if (/\b(bold|statement|pop of color|vibrant|colorful|stand out)\b/.test(rawPrompt)) {
+  if (/\b(bold|statement|pop\s*of\s*color|vibrant|colorful|stand\s*out)\b/.test(rawPrompt)) {
     if (hexToOklch(garment.colorHex).C >= 0.12) boost += 3;
   }
   if (/\b(oversized|baggy|street|streetwear|edgy)\b/.test(rawPrompt)) {
@@ -1111,9 +1404,11 @@ function scoreGarmentPromptRelevance(
 
 /**
  * Stage-1 Next-Gen Candidate Retriever:
- * Scores combinations across 6 objectives (OKLCH color, 128-dim vector + learned taste,
- * silhouette/layering proportion, 12-season personal flattery, occasion/weather/prompt intent,
- * and under-worn rotation) then selects diverse finalists via Maximal Marginal Relevance (MMR).
+ * - Infers effective season from both dropdown AND natural-language prompt ("summer", "hot", "winter")
+ * - Hard-filters thermally inappropriate pieces (NEVER sweaters/wool coats in Summer!)
+ * - Generates REAL multi-layer outfits (Base shirt/tee UNDER sweater/cardigan/hoodie/vest + Outer + Bottom + Footwear)
+ * - Never leaves a cardigan/sweater bare without a base shirt when base tops exist
+ * - Selects diverse finalists via Maximal Marginal Relevance (MMR)
  */
 export function generateCandidateCombinations(
   items: Garment[],
@@ -1131,7 +1426,7 @@ export function generateCandidateCombinations(
 ): CandidateCombination[] {
   const {
     occasion,
-    season,
+    season = 'All-Season',
     anchorItemId,
     customPrompt = '',
     profile,
@@ -1141,6 +1436,8 @@ export function generateCandidateCombinations(
   } = options;
 
   const cleanPrompt = customPrompt.trim().toLowerCase();
+  const effectiveSeason = inferEffectiveSeason(season, cleanPrompt);
+
   const stopWords = new Set([
     'with', 'that', 'this', 'from', 'for', 'the', 'and', 'but', 'look', 'looks',
     'outfit', 'outfits', 'wear', 'wearing', 'something', 'want', 'need', 'like',
@@ -1153,8 +1450,10 @@ export function generateCandidateCombinations(
     .slice(0, 14);
 
   const avoidOuterwear = /\b(no|without)\s+(jacket|coat|outerwear|blazer|layers?)\b/.test(cleanPrompt);
+  const avoidSweaters = /\b(no|without)\s+(sweater|sweaters|knit|knitwear|hoodie|cardigan|layers?)\b/.test(cleanPrompt);
   const avoidSneakers = /\b(no|without)\s+(sneakers?|trainers?|runners?)\b/.test(cleanPrompt);
   const avoidDenim = /\b(no|without)\s+(jeans?|denim)\b/.test(cleanPrompt);
+  const wantLayers = /\b(layer|layered|layering|underlayer|shirt\s*under|over\s*a\s*shirt|sweater\s*over)\b/.test(cleanPrompt);
   const preferMonochrome = /\b(monochrome|all[- ]black|all[- ]white|tonal)\b/.test(cleanPrompt);
 
   const tasteCentroid = computeTasteCentroid(items, vectors, savedOutfits);
@@ -1162,20 +1461,78 @@ export function generateCandidateCombinations(
     savedOutfits.map((o) => [...o.itemIds].sort().join('|'))
   );
 
+  const anchoredGarment = anchorItemId ? items.find((i) => i.id === anchorItemId) : undefined;
+
+  // Split tops into real dressing roles: Base (shirts/tees/polos) vs Mid-Layer (sweaters/cardigans/vests/hoodies)
+  const allTops = items.filter((i) => i.category === 'tops');
+  let baseTops = allTops.filter((t) => classifyTopLayerRole(t) === 'base');
+  let midLayers = allTops.filter((t) => classifyTopLayerRole(t) === 'mid');
+  let bottoms = items.filter((i) => i.category === 'bottoms');
+  let outerwear = items.filter((i) => i.category === 'outerwear');
+  let footwear = items.filter((i) => i.category === 'footwear');
+  const accessories = items.filter((i) => i.category === 'accessories');
+
+  // Strict seasonal thermal filtering (preserving anchored piece if user explicitly picked it)
+  if (effectiveSeason === 'Summer') {
+    const summerBaseTops = baseTops.filter((g) => g.id === anchorItemId || !isSummerUnsuitable(g));
+    if (summerBaseTops.length > 0) baseTops = summerBaseTops;
+
+    // NEVER stack sweaters/hoodies/knits in Summer unless explicitly anchored by the user
+    midLayers = midLayers.filter((g) => g.id === anchorItemId);
+
+    const summerBottoms = bottoms.filter((g) => g.id === anchorItemId || !isSummerUnsuitable(g));
+    if (summerBottoms.length > 0) bottoms = summerBottoms;
+
+    // Only keep lightweight breathable summer outerwear (e.g. linen overshirt) or anchored piece
+    outerwear = outerwear.filter((g) => g.id === anchorItemId || !isSummerUnsuitable(g));
+
+    const summerFootwear = footwear.filter((g) => g.id === anchorItemId || !isSummerUnsuitable(g));
+    if (summerFootwear.length > 0) footwear = summerFootwear;
+  } else if (effectiveSeason === 'Winter') {
+    const winterBaseTops = baseTops.filter((g) => g.id === anchorItemId || !isWinterUnsuitable(g));
+    if (winterBaseTops.length > 0) baseTops = winterBaseTops;
+
+    const winterBottoms = bottoms.filter((g) => g.id === anchorItemId || !isWinterUnsuitable(g));
+    if (winterBottoms.length > 0) bottoms = winterBottoms;
+
+    const winterFootwear = footwear.filter((g) => g.id === anchorItemId || !isWinterUnsuitable(g));
+    if (winterFootwear.length > 0) footwear = winterFootwear;
+  }
+
+  if (avoidSweaters) {
+    midLayers = midLayers.filter((g) => g.id === anchorItemId);
+  }
+  if (avoidDenim) {
+    const nonDenimBottoms = bottoms.filter(
+      (b) => b.id === anchorItemId || !/\b(denim|jeans?)\b/i.test(`${b.name} ${b.fabric} ${b.subCategory}`)
+    );
+    if (nonDenimBottoms.length > 0) bottoms = nonDenimBottoms;
+  }
+  if (avoidSneakers) {
+    const nonSneakers = footwear.filter(
+      (f) => f.id === anchorItemId || !/\b(sneakers?|trainers?|runners?)\b/i.test(`${f.name} ${f.subCategory}`)
+    );
+    if (nonSneakers.length > 0) footwear = nonSneakers;
+  }
+
+  // Fallback: if closet has ONLY mid-layers and zero base tops (rare), allow mid-layers as fallback
+  if ((baseTops.length === 0 && midLayers.length === 0) || bottoms.length === 0) {
+    return [];
+  }
+
   const rankSlotByContext = (list: Garment[], cap: number): Garment[] => {
     if (list.length <= cap) return list;
     return [...list]
       .sort((a, b) => {
         const scoreItem = (g: Garment) => {
           let s = scoreGarmentPromptRelevance(g, promptTokens, cleanPrompt);
-          if (profile) s += (scoreGarmentForPerson(g, profile) - 70) * 0.3;
+          if (profile) s += (scoreGarmentForPerson(g, profile) - 70) * 0.35;
           if (occasion && g.occasions.includes(occasion)) s += 3.5;
           if (
-            season &&
-            season !== 'All-Season' &&
-            (g.seasons.includes(season) || g.seasons.includes('All-Season'))
+            effectiveSeason !== 'All-Season' &&
+            (g.seasons.includes(effectiveSeason) || g.seasons.includes('All-Season'))
           ) {
-            s += 2.5;
+            s += 3;
           }
           if (explorationMode === 'fresh' && g.wearCount === 0) s += 3;
           return s;
@@ -1185,43 +1542,97 @@ export function generateCandidateCombinations(
       .slice(0, cap);
   };
 
-  let tops = items.filter((i) => i.category === 'tops');
-  let bottoms = items.filter((i) => i.category === 'bottoms');
-  let outerwear = items.filter((i) => i.category === 'outerwear');
-  let footwear = items.filter((i) => i.category === 'footwear');
-  const accessories = items.filter((i) => i.category === 'accessories');
+  // Pre-filter anchored slot before enumeration
+  const anchoredTopRole =
+    anchoredGarment?.category === 'tops' ? classifyTopLayerRole(anchoredGarment) : null;
 
-  if (avoidDenim) {
-    const nonDenimBottoms = bottoms.filter(
-      (b) => !/\b(denim|jeans?)\b/i.test(`${b.name} ${b.fabric} ${b.subCategory}`)
-    );
-    if (nonDenimBottoms.length > 0) bottoms = nonDenimBottoms;
-  }
-  if (avoidSneakers) {
-    const nonSneakers = footwear.filter(
-      (f) => !/\b(sneakers?|trainers?|runners?)\b/i.test(`${f.name} ${f.subCategory}`)
-    );
-    if (nonSneakers.length > 0) footwear = nonSneakers;
+  if (anchoredGarment) {
+    if (anchoredGarment.category === 'tops' && anchoredTopRole === 'base') {
+      baseTops = [anchoredGarment];
+    } else if (anchoredGarment.category === 'tops' && anchoredTopRole === 'mid') {
+      midLayers = [anchoredGarment];
+    } else if (anchoredGarment.category === 'bottoms') {
+      bottoms = [anchoredGarment];
+    } else if (anchoredGarment.category === 'outerwear') {
+      outerwear = [anchoredGarment];
+    } else if (anchoredGarment.category === 'footwear') {
+      footwear = [anchoredGarment];
+    }
   }
 
-  if (tops.length === 0 || bottoms.length === 0) {
+  // Build valid Upper-Body Stacks:
+  // 1. Standalone Base Top: [base] (shirts, tees, polos — great for Summer, Spring, smart casual)
+  // 2. Layered Base + Mid: [base, mid] (shirt/tee UNDER sweater/cardigan/vest/hoodie — real layering!)
+  // 3. Standalone Mid ONLY if the user has zero base tops in their entire closet OR thin standalone turtleneck
+  const cappedBase = rankSlotByContext(baseTops, 10);
+  const cappedMid = rankSlotByContext(midLayers, 7);
+  const cappedBottoms = rankSlotByContext(bottoms, 10);
+  const cappedOuter = rankSlotByContext(outerwear, 5);
+  const cappedShoes = rankSlotByContext(footwear, 5);
+
+  const upperStacks: Garment[][] = [];
+
+  // A) Base + Mid layered pairs (when mid-layers exist and not Summer)
+  if (cappedBase.length > 0 && cappedMid.length > 0) {
+    for (const base of cappedBase) {
+      for (const mid of cappedMid) {
+        if (base.id === mid.id) continue;
+        // Skip physically impossible layering (heavy base under lightweight mid)
+        if (FABRIC_WEIGHT_RANK[base.fabricWeight] > FABRIC_WEIGHT_RANK[mid.fabricWeight]) {
+          continue;
+        }
+        upperStacks.push([base, mid]);
+      }
+    }
+  }
+
+  // B) Standalone Base Top stacks (unless user specifically anchored a mid-layer)
+  if (anchoredTopRole !== 'mid') {
+    for (const base of cappedBase) {
+      upperStacks.push([base]);
+    }
+  }
+
+  // C) Standalone Mid ONLY when closet literally has no base tops or piece is a lightweight turtleneck
+  for (const mid of cappedMid) {
+    if (cappedBase.length === 0 || !requiresUnderlayer(mid)) {
+      upperStacks.push([mid]);
+    }
+  }
+
+  if (upperStacks.length === 0) {
     return [];
   }
 
-  // Pre-filter anchored slot before cartesian enumeration
-  const anchoredGarment = anchorItemId ? items.find((i) => i.id === anchorItemId) : undefined;
-  if (anchoredGarment) {
-    if (anchoredGarment.category === 'tops') tops = [anchoredGarment];
-    else if (anchoredGarment.category === 'bottoms') bottoms = [anchoredGarment];
-    else if (anchoredGarment.category === 'outerwear') outerwear = [anchoredGarment];
-    else if (anchoredGarment.category === 'footwear') footwear = [anchoredGarment];
-  }
-
-  // Bounded search for 50-100+ item cloud wardrobes (<25ms)
-  const cappedTops = rankSlotByContext(tops, 14);
-  const cappedBottoms = rankSlotByContext(bottoms, 12);
-  const cappedOuter = rankSlotByContext(outerwear, 6);
-  const cappedShoes = rankSlotByContext(footwear, 6);
+  // Cap upper stacks cleanly for <25ms latency on large wardrobes
+  const rankedUpperStacks =
+    upperStacks.length <= 28
+      ? upperStacks
+      : [...upperStacks]
+          .sort((a, b) => {
+            const evalStack = (stack: Garment[]) => {
+              let s = 0;
+              for (const g of stack) {
+                s += scoreGarmentPromptRelevance(g, promptTokens, cleanPrompt);
+                if (profile) s += (scoreGarmentForPerson(g, profile) - 70) * 0.3;
+              }
+              if (stack.length === 2) {
+                const pair = scorePairCompatibility(
+                  stack[0],
+                  stack[1],
+                  vectors[stack[0].id] ?? computeDeterministicVector(stack[0]),
+                  vectors[stack[1].id] ?? computeDeterministicVector(stack[1])
+                );
+                s += (pair.score - 75) * 0.6;
+                if (effectiveSeason === 'Autumn' || effectiveSeason === 'Winter' || wantLayers) {
+                  s += 6;
+                }
+              }
+              return s;
+            };
+            return evalStack(b) - evalStack(a);
+          })
+          .slice(0, 28);
 
   const candidates: CandidateCombination[] = [];
   const seenKeys = new Set<string>();
@@ -1231,8 +1642,10 @@ export function generateCandidateCombinations(
       ? [anchoredGarment]
       : avoidOuterwear
         ? [null]
-        : season === 'Summer'
-          ? [null, ...cappedOuter.slice(0, 1)]
+        : effectiveSeason === 'Summer'
+          ? wantLayers && cappedOuter.length > 0
+            ? [null, cappedOuter[0]]
+            : [null]
           : [...cappedOuter, null];
 
   const shoeOptions: Array<Garment | null> =
@@ -1246,25 +1659,40 @@ export function generateCandidateCombinations(
     ? OCCASION_FORMALITY_BAND[occasion]
     : [3, 8];
 
-  for (const top of cappedTops) {
+  for (const upperStack of rankedUpperStacks) {
+    const primaryUpper = upperStack[upperStack.length - 1];
+    const hasMidLayer = upperStack.length >= 2;
+
     for (const bottom of cappedBottoms) {
       for (const outer of outerOptions) {
+        // Avoid over-stacking in Spring if already wearing Base + Mid + Heavy Coat
+        if (
+          effectiveSeason === 'Spring' &&
+          hasMidLayer &&
+          outer &&
+          outer.fabricWeight === 'Heavyweight' &&
+          outer.id !== anchorItemId
+        ) {
+          continue;
+        }
+
         for (const shoe of shoeOptions) {
-          const comboItems = [top, bottom, outer, shoe].filter(
+          const comboItemsRaw = [...upperStack, bottom, outer, shoe].filter(
             (x): x is Garment => x !== null
           );
 
           // Include anchored accessory, or best-matching accessory if available
           if (anchoredGarment?.category === 'accessories') {
-            comboItems.push(anchoredGarment);
+            comboItemsRaw.push(anchoredGarment);
           } else if (accessories.length > 0) {
             let bestAcc: Garment | null = null;
-            let bestAccScore = 76; // Only add an accessory if it genuinely harmonizes
+            let bestAccScore = 76;
             for (const acc of accessories.slice(0, 6)) {
+              if (effectiveSeason === 'Summer' && isSummerUnsuitable(acc)) continue;
               const s = scorePairCompatibility(
-                top,
+                primaryUpper,
                 acc,
-                vectors[top.id] ?? computeDeterministicVector(top),
+                vectors[primaryUpper.id] ?? computeDeterministicVector(primaryUpper),
                 vectors[acc.id] ?? computeDeterministicVector(acc)
               ).score;
               if (s > bestAccScore) {
@@ -1272,12 +1700,14 @@ export function generateCandidateCombinations(
                 bestAcc = acc;
               }
             }
-            if (bestAcc) comboItems.push(bestAcc);
+            if (bestAcc) comboItemsRaw.push(bestAcc);
           }
 
-          if (anchorItemId && !comboItems.some((c) => c.id === anchorItemId)) {
+          if (anchorItemId && !comboItemsRaw.some((c) => c.id === anchorItemId)) {
             continue;
           }
+
+          const comboItems = sortOutfitByDressingOrder(comboItemsRaw);
 
           const key = comboItems
             .map((c) => c.id)
@@ -1310,26 +1740,32 @@ export function generateCandidateCombinations(
             }
           }
 
-          // Season & thermal appropriateness
-          if (season && season !== 'All-Season') {
+          // Season & real thermal appropriateness
+          if (effectiveSeason !== 'All-Season') {
             const seasonHits = comboItems.filter(
-              (c) => c.seasons.includes(season) || c.seasons.includes('All-Season')
+              (c) => c.seasons.includes(effectiveSeason) || c.seasons.includes('All-Season')
             ).length;
-            bonus += Math.round((seasonHits / comboItems.length) * 4) - 2;
+            bonus += Math.round((seasonHits / comboItems.length) * 5) - 2;
 
-            if (season === 'Summer') {
-              const heavyCount = comboItems.filter((c) => c.fabricWeight === 'Heavyweight').length;
-              bonus -= heavyCount * 4;
+            if (effectiveSeason === 'Summer') {
+              const badSummer = comboItems.filter((c) => isSummerUnsuitable(c)).length;
+              bonus -= badSummer * 14;
+              const lightCount = comboItems.filter((c) => c.fabricWeight === 'Lightweight').length;
+              bonus += Math.min(5, lightCount * 2);
             }
           }
 
-          // Prefer 3-4 piece layered looks for cooler seasons unless user excluded outerwear
-          if (!avoidOuterwear) {
-            if (outer && (season === 'Autumn' || season === 'Winter')) {
-              bonus += 3;
-            } else if (!outer && (season === 'Autumn' || season === 'Winter')) {
-              bonus -= 2;
-            }
+          // Reward real multi-layering (Base + Mid, or Base + Outer, or Base + Mid + Outer) in cool weather or when asked
+          const layerCount = (hasMidLayer ? 2 : 1) + (outer ? 1 : 0);
+          if (wantLayers) {
+            bonus += layerCount >= 2 ? 7 : -4;
+          } else if (effectiveSeason === 'Winter') {
+            bonus += layerCount >= 3 ? 6 : layerCount === 2 ? 4 : -4;
+          } else if (effectiveSeason === 'Autumn') {
+            bonus += layerCount >= 2 ? 5 : -2;
+          } else if (effectiveSeason === 'All-Season' && hasMidLayer) {
+            // Reward real shirt-under-sweater layering over bare tops
+            bonus += 3;
           }
 
           // Custom style brief alignment
@@ -1357,7 +1793,7 @@ export function generateCandidateCombinations(
             }
           }
 
-          // Closet rotation & freshness score (rewards under-worn pieces, avoids exact saved duplicates)
+          // Closet rotation & freshness score
           const avgWear =
             comboItems.reduce((acc, g) => acc + g.wearCount, 0) / comboItems.length;
           const isAlreadySaved = savedKeys.has(key);
@@ -1377,13 +1813,14 @@ export function generateCandidateCombinations(
           candidates.push({
             itemIds: comboItems.map((c) => c.id),
             items: comboItems,
-            localScore: Math.max(50, Math.min(98, evalRes.overallScore + bonus)),
+            localScore: Math.max(48, Math.min(98, evalRes.overallScore + bonus)),
             vectorScore: evalRes.vectorScore,
             colorScore: evalRes.colorScore,
             proportionScore: evalRes.proportionScore,
             personalScore: evalRes.personalScore,
             freshnessScore,
             paletteSummary: evalRes.paletteSummary,
+            effectiveSeason,
           });
         }
       }
@@ -1393,7 +1830,7 @@ export function generateCandidateCombinations(
   candidates.sort((a, b) => b.localScore - a.localScore);
 
   // Maximal Marginal Relevance (MMR) selection: balances top quality with genuine variety
-  const pool = candidates.slice(0, Math.min(candidates.length, 160));
+  const pool = candidates.slice(0, Math.min(candidates.length, 180));
   const selected: CandidateCombination[] = [];
   const lambda = explorationMode === 'fresh' ? 0.62 : 0.72;
 
@@ -1413,7 +1850,6 @@ export function generateCandidateCombinations(
         }
         const union = setA.size + setB.size - inter;
         const jaccard = union > 0 ? inter / union : 0;
-        // Adjust overlap penalty when an anchor item is intentionally shared across all combos
         const effectiveSim =
           anchorItemId && setA.has(anchorItemId) && setB.has(anchorItemId)
             ? Math.max(0, (inter - 1) / Math.max(1, union - 1))

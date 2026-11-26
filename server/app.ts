@@ -90,6 +90,85 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
+interface PortraitPayload {
+  base64: string;
+  mimeType: string;
+}
+
+function parseDataUrlPortrait(url: string | undefined | null): PortraitPayload | null {
+  if (!url || typeof url !== 'string' || !url.startsWith('data:')) return null;
+  const match = url.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/);
+  if (!match) return null;
+  const mimeType = match[1].toLowerCase();
+  if (!ALLOWED_IMAGE_MIME_TYPES.has(mimeType)) return null;
+  const base64 = match[2].replace(/\s+/g, '');
+  // Cap at ~260KB of base64 (~195KB decoded) for lean multimodal calls
+  if (!base64 || base64.length > 260_000) return null;
+  return { base64, mimeType };
+}
+
+function extractPortraitImage(
+  bodyPortrait?: { base64?: string; mimeType?: string } | null,
+  profilePhotoUrl?: string
+): PortraitPayload | null {
+  if (
+    bodyPortrait &&
+    typeof bodyPortrait.base64 === 'string' &&
+    typeof bodyPortrait.mimeType === 'string'
+  ) {
+    const mimeType = bodyPortrait.mimeType.trim().toLowerCase();
+    const base64 = bodyPortrait.base64.trim();
+    if (ALLOWED_IMAGE_MIME_TYPES.has(mimeType) && base64.length > 0 && base64.length <= 260_000) {
+      return { base64, mimeType };
+    }
+  }
+  const fromDataUrl = parseDataUrlPortrait(profilePhotoUrl);
+  if (fromDataUrl) return fromDataUrl;
+  if (typeof profilePhotoUrl === 'string' && profilePhotoUrl.startsWith('/uploads/')) {
+    return readImageAsBase64(profilePhotoUrl);
+  }
+  return null;
+}
+
+async function fetchRemotePortraitImage(url: string): Promise<PortraitPayload | null> {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') return null;
+    // Block localhost / private IP literal hosts
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '0.0.0.0' ||
+      host === '::1' ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.') ||
+      host.startsWith('169.254.') ||
+      /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+    ) {
+      return null;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4500);
+    try {
+      const resp = await fetch(parsed.toString(), {
+        signal: controller.signal,
+        headers: { Accept: 'image/*' },
+      });
+      if (!resp.ok) return null;
+      const ct = (resp.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+      const mimeType = ALLOWED_IMAGE_MIME_TYPES.has(ct) ? ct : 'image/jpeg';
+      const buf = Buffer.from(await resp.arrayBuffer());
+      if (buf.length === 0 || buf.length > 1_200_000) return null;
+      return { base64: buf.toString('base64'), mimeType };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return null;
+  }
+}
+
 export function createApiApp(): express.Express {
   const app = express();
   app.set('trust proxy', true);
@@ -519,19 +598,19 @@ export function createApiApp(): express.Express {
     if (typeof body.bodyType === 'string') store.profile.bodyType = body.bodyType.trim().slice(0, 60);
     if (
       body.skinUndertone &&
-      ['Warm', 'Cool', 'Neutral', 'Olive'].includes(body.skinUndertone)
+      ['Warm', 'Cool', 'Neutral', 'Olive', 'Warm Olive', 'Cool Olive'].includes(body.skinUndertone)
     ) {
       store.profile.skinUndertone = body.skinUndertone;
     }
     if (Array.isArray(body.preferredFits)) {
       store.profile.preferredFits = body.preferredFits
         .filter((f): f is string => typeof f === 'string' && f.trim().length > 0)
-        .slice(0, 6);
+        .slice(0, 12);
     }
     if (Array.isArray(body.styleAesthetics)) {
       store.profile.styleAesthetics = body.styleAesthetics
         .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
-        .slice(0, 6);
+        .slice(0, 12);
     }
     if (
       body.budgetRange &&
@@ -729,12 +808,13 @@ export function createApiApp(): express.Express {
     }
   });
 
-  // Stateless outfit combination ranking from user's cloud wardrobe + vectors
+  // Stateless outfit combination ranking from user's cloud wardrobe + vectors + portrait
   app.post('/api/ai/rank-combinations', async (req, res) => {
     const body = req.body as {
       garments?: Garment[];
       vectors?: Record<string, number[]>;
       profile?: import('../src/types/styling.ts').UserProfile;
+      portraitImage?: { base64?: string; mimeType?: string } | null;
       occasion?: OccasionType;
       season?: SeasonTag;
       anchorItemId?: string;
@@ -768,7 +848,7 @@ export function createApiApp(): express.Express {
         ? body.customPrompt.trim().slice(0, 320)
         : undefined;
 
-    // Stage 1: Multi-objective retrieval + MMR diversity selects 8 distinct finalists
+    // Stage 1: Multi-objective retrieval + seasonal thermal guard + multi-layer assembly + MMR diversity
     const candidates = generateCandidateCombinations(garments, vectors, {
       occasion,
       season,
@@ -781,15 +861,20 @@ export function createApiApp(): express.Express {
     });
 
     if (candidates.length === 0) {
+      const effectivePrompt = (customPrompt || '').toLowerCase();
+      const isSummer = season === 'Summer' || /\b(summer|hot|heat|humid|beach|tropical)\b/.test(effectivePrompt);
       res.status(400).json({
-        error:
-          'Add at least one top and one bottom (and ensure your selected anchor piece fits) to generate combinations.',
+        error: isSummer
+          ? 'No breathable summer-appropriate tops and bottoms were found in your wardrobe (heavy sweaters and winter coats are excluded in Summer). Upload lightweight shirts, tees, or polos to generate summer looks.'
+          : 'Add at least one top and one bottom (and ensure your selected anchor piece fits) to generate combinations.',
       });
       return;
     }
 
+    const portraitImage = extractPortraitImage(body.portraitImage, profile.photoUrl);
+
     try {
-      // Stage 2: Cross-encoder stylist reranks 8 MMR finalists -> top 5 curated looks
+      // Stage 2: Multimodal cross-encoder stylist reranks 8 MMR finalists -> top 5 curated looks
       const { combinations, modelUsed } = await rankCombinationsWithAI(
         candidates,
         profile,
@@ -797,9 +882,14 @@ export function createApiApp(): express.Express {
         season,
         customPrompt,
         savedOutfits,
-        explorationMode
+        explorationMode,
+        portraitImage
       );
-      res.json({ combinations, modelUsed });
+      res.json({
+        combinations,
+        modelUsed,
+        effectiveSeason: candidates[0]?.effectiveSeason ?? season,
+      });
     } catch (err) {
       res.status(502).json({
         error: err instanceof Error ? err.message : 'Failed to rank combinations.',
@@ -812,6 +902,7 @@ export function createApiApp(): express.Express {
     const body = req.body as {
       items?: Garment[];
       profile?: import('../src/types/styling.ts').UserProfile;
+      portraitImage?: { base64?: string; mimeType?: string } | null;
       occasion?: OccasionType;
     };
 
@@ -821,11 +912,14 @@ export function createApiApp(): express.Express {
       return;
     }
 
+    const portraitImage = extractPortraitImage(body.portraitImage, body.profile.photoUrl);
+
     try {
       const critique = await critiqueCustomOutfitWithAI(
         items,
         body.profile,
-        body.occasion || 'Smart Casual'
+        body.occasion || 'Smart Casual',
+        portraitImage
       );
       res.json(critique);
     } catch (err) {
@@ -848,14 +942,31 @@ export function createApiApp(): express.Express {
       return;
     }
 
-    let photoBase64 = typeof body.photoBase64 === 'string' ? body.photoBase64 : null;
-    let photoMimeType = typeof body.photoMimeType === 'string' ? body.photoMimeType : null;
+    let photoBase64 = typeof body.photoBase64 === 'string' && body.photoBase64.trim()
+      ? body.photoBase64.trim()
+      : null;
+    let photoMimeType = typeof body.photoMimeType === 'string' && body.photoMimeType.trim()
+      ? body.photoMimeType.trim().toLowerCase()
+      : null;
 
-    if (!photoBase64 && typeof body.profile.photoUrl === 'string') {
-      const loaded = readImageAsBase64(body.profile.photoUrl);
-      if (loaded) {
-        photoBase64 = loaded.base64;
-        photoMimeType = loaded.mimeType;
+    if (!photoBase64 && typeof body.profile.photoUrl === 'string' && body.profile.photoUrl.trim()) {
+      const url = body.profile.photoUrl.trim();
+      const fromData = parseDataUrlPortrait(url);
+      if (fromData) {
+        photoBase64 = fromData.base64;
+        photoMimeType = fromData.mimeType;
+      } else if (url.startsWith('https://')) {
+        const fetched = await fetchRemotePortraitImage(url);
+        if (fetched) {
+          photoBase64 = fetched.base64;
+          photoMimeType = fetched.mimeType;
+        }
+      } else {
+        const loaded = readImageAsBase64(url);
+        if (loaded) {
+          photoBase64 = loaded.base64;
+          photoMimeType = loaded.mimeType;
+        }
       }
     }
 
@@ -873,7 +984,7 @@ export function createApiApp(): express.Express {
     }
   });
 
-  // Stateless Shopping Advisor chat with full compact cloud wardrobe context + optional shopping item photos
+  // Stateless Shopping Advisor chat with full compact cloud wardrobe context + optional shopping item photos + user portrait
   app.post('/api/ai/advisor-chat', async (req, res) => {
     const body = req.body as {
       message?: string;
@@ -881,6 +992,7 @@ export function createApiApp(): express.Express {
       garments?: Garment[];
       savedOutfits?: OutfitCombination[];
       profile?: import('../src/types/styling.ts').UserProfile;
+      portraitImage?: { base64?: string; mimeType?: string } | null;
       images?: Array<{ base64?: string; mimeType?: string; label?: string }>;
     };
 
@@ -914,6 +1026,8 @@ export function createApiApp(): express.Express {
       return;
     }
 
+    const portraitImage = extractPortraitImage(body.portraitImage, body.profile.photoUrl);
+
     try {
       const reply = await chatWithShoppingAdvisor(
         effectiveQuestion.slice(0, 1000),
@@ -921,7 +1035,8 @@ export function createApiApp(): express.Express {
         Array.isArray(body.garments) ? body.garments.slice(0, 120) : [],
         Array.isArray(body.savedOutfits) ? body.savedOutfits.slice(0, 20) : [],
         body.profile,
-        validImages
+        validImages,
+        portraitImage
       );
       res.json(reply);
     } catch (err) {

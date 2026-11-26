@@ -47,7 +47,14 @@ const VALID_CATEGORIES: GarmentCategory[] = [
   'accessories',
 ];
 const VALID_UNDERTONES = ['Warm', 'Cool', 'Neutral'] as const;
-const VALID_SKIN_UNDERTONES = ['Warm', 'Cool', 'Neutral', 'Olive'] as const;
+const VALID_SKIN_UNDERTONES = [
+  'Warm',
+  'Cool',
+  'Neutral',
+  'Olive',
+  'Warm Olive',
+  'Cool Olive',
+] as const;
 const VALID_WEIGHTS = ['Lightweight', 'Midweight', 'Heavyweight'] as const;
 const VALID_ROLES = ['Base', 'Mid', 'Outer', 'Bottom', 'Footwear', 'Accent'] as const;
 const VALID_OCCASIONS: OccasionType[] = [
@@ -114,6 +121,14 @@ function sanitizeVector(val: unknown, fallbackGarment?: Parameters<typeof comput
   return fallbackGarment ? computeDeterministicVector(fallbackGarment) : [];
 }
 
+function sanitizeHexList(val: unknown, maxItems: number): string[] {
+  if (!Array.isArray(val)) return [];
+  return val
+    .filter((v): v is string => typeof v === 'string' && /^#[0-9A-Fa-f]{6}$/.test(v.trim()))
+    .map((v) => v.trim().toUpperCase())
+    .slice(0, maxItems);
+}
+
 function sanitizeBlueprint(bp: AIProfileBlueprint | null): AIProfileBlueprint | null {
   if (!bp) return null;
   const out: AIProfileBlueprint = {
@@ -127,6 +142,20 @@ function sanitizeBlueprint(bp: AIProfileBlueprint | null): AIProfileBlueprint | 
     recommendedFabrics: sanitizeStringList(bp.recommendedFabrics, 8, 60),
     analyzedAt: clampString(bp.analyzedAt, 64, new Date().toISOString()),
   };
+  if (typeof bp.visualProfile === 'string' && bp.visualProfile.trim()) {
+    out.visualProfile = clampString(bp.visualProfile, 600);
+  }
+  const bestHexes = sanitizeHexList(bp.bestColorHexes, 8);
+  if (bestHexes.length > 0) {
+    out.bestColorHexes = bestHexes;
+  }
+  const avoidHexes = sanitizeHexList(bp.avoidColorHexes, 6);
+  if (avoidHexes.length > 0) {
+    out.avoidColorHexes = avoidHexes;
+  }
+  if (typeof bp.photoAnalyzed === 'boolean') {
+    out.photoAnalyzed = bp.photoAnalyzed;
+  }
   if (bp.modelUsed) {
     out.modelUsed = clampString(bp.modelUsed, 100);
   }
@@ -915,10 +944,10 @@ export async function updateProfileInCloud(
     updates.skinUndertone = patch.skinUndertone;
   }
   if (Array.isArray(patch.preferredFits)) {
-    updates.preferredFits = sanitizeStringList(patch.preferredFits, 6, 40);
+    updates.preferredFits = sanitizeStringList(patch.preferredFits, 12, 40);
   }
   if (Array.isArray(patch.styleAesthetics)) {
-    updates.styleAesthetics = sanitizeStringList(patch.styleAesthetics, 6, 50);
+    updates.styleAesthetics = sanitizeStringList(patch.styleAesthetics, 12, 50);
   }
   if (patch.budgetRange && VALID_BUDGETS.includes(patch.budgetRange)) {
     updates.budgetRange = patch.budgetRange;
@@ -959,6 +988,60 @@ export async function updateProfileBlueprintInCloud(
       blueprint: sanitizeBlueprint(blueprint),
       updatedAt: serverTimestamp(),
     });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
+  }
+}
+
+/**
+ * Atomically persists portrait photo (optional), AI Styling Blueprint, and AI auto-filled
+ * style profile fields in a single Firestore update so nothing is ever partially saved or lost.
+ */
+export async function saveProfileAnalysisInCloud(
+  uid: string,
+  payload: {
+    photoUrl?: string;
+    blueprint: AIProfileBlueprint;
+    suggestedProfile?: {
+      skinUndertone?: UserProfile['skinUndertone'];
+      bodyType?: string;
+      preferredFits?: string[];
+      styleAesthetics?: string[];
+      stylingGoals?: string;
+    };
+  }
+): Promise<void> {
+  const path = `users/${uid}`;
+  const updates: Record<string, unknown> = {
+    blueprint: sanitizeBlueprint(payload.blueprint),
+    updatedAt: serverTimestamp(),
+  };
+
+  if (typeof payload.photoUrl === 'string' && payload.photoUrl.trim()) {
+    updates.photoUrl = clampString(payload.photoUrl, 250000);
+  }
+
+  const sp = payload.suggestedProfile;
+  if (sp) {
+    if (sp.skinUndertone && VALID_SKIN_UNDERTONES.includes(sp.skinUndertone)) {
+      updates.skinUndertone = sp.skinUndertone;
+    }
+    if (typeof sp.bodyType === 'string' && sp.bodyType.trim()) {
+      updates.bodyType = clampString(sp.bodyType, 60);
+    }
+    if (Array.isArray(sp.preferredFits) && sp.preferredFits.length > 0) {
+      updates.preferredFits = sanitizeStringList(sp.preferredFits, 12, 40);
+    }
+    if (Array.isArray(sp.styleAesthetics) && sp.styleAesthetics.length > 0) {
+      updates.styleAesthetics = sanitizeStringList(sp.styleAesthetics, 12, 50);
+    }
+    if (typeof sp.stylingGoals === 'string' && sp.stylingGoals.trim()) {
+      updates.stylingGoals = clampString(sp.stylingGoals, 300);
+    }
+  }
+
+  try {
+    await updateDoc(doc(db, 'users', uid), updates);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
