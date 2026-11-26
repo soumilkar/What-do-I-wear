@@ -30,6 +30,7 @@ export function GarmentInspector({
   const [saving, setSaving] = useState(false);
   const [reanalyzing, setReanalyzing] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [form, setForm] = useState({
     name: '',
     category: 'tops' as GarmentCategory,
@@ -44,6 +45,7 @@ export function GarmentInspector({
   useEffect(() => {
     if (!garment) return;
     setEditing(false);
+    setActionError(null);
     setForm({
       name: garment.name,
       category: garment.category,
@@ -69,29 +71,38 @@ export function GarmentInspector({
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    setActionError(null);
     setSaving(true);
     try {
       await onUpdateGarment(garment.id, form);
       setEditing(false);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to save changes.');
     } finally {
       setSaving(false);
     }
   };
 
   const handleReanalyze = async () => {
+    setActionError(null);
     setReanalyzing(true);
     try {
       await onReanalyzeGarment(garment.id);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to re-inspect garment.');
     } finally {
       setReanalyzing(false);
     }
   };
 
   const handleDelete = async () => {
+    setActionError(null);
     setDeleting(true);
     try {
       await onDeleteGarment(garment.id);
       onClose();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to remove garment.');
     } finally {
       setDeleting(false);
     }
@@ -168,6 +179,15 @@ export function GarmentInspector({
               {editing ? 'Cancel Edit' : 'Edit Details'}
             </button>
           </div>
+
+          {actionError && (
+            <div
+              role="alert"
+              className="px-4 py-3 rounded-xl bg-[#FFF2F2] border border-[#D70015]/20 text-[13px] text-[#B00012]"
+            >
+              {actionError}
+            </div>
+          )}
 
           {editing ? (
             <form onSubmit={handleSave} className="space-y-4 pt-2 border-t border-black/[0.06]">

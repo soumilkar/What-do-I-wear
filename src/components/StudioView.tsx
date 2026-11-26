@@ -6,6 +6,7 @@ import type {
   OccasionType,
   OutfitCombination,
   SeasonTag,
+  UserProfile,
 } from '../types/styling';
 import {
   computeDeterministicVector,
@@ -15,6 +16,8 @@ import { SmartImage } from './SmartImage';
 
 interface StudioViewProps {
   garments: Garment[];
+  vectors: Record<string, number[]>;
+  profile: UserProfile;
   savedOutfits: OutfitCombination[];
   draftSeed?: OutfitCombination | null;
   onClearDraftSeed: () => void;
@@ -44,6 +47,8 @@ const SLOTS: Array<{ category: GarmentCategory; label: string }> = [
 
 export function StudioView({
   garments,
+  vectors,
+  profile,
   savedOutfits,
   draftSeed,
   onClearDraftSeed,
@@ -99,17 +104,20 @@ export function StudioView({
       .filter((g): g is Garment => Boolean(g));
   }, [selectedBySlot, garmentMap]);
 
-  const localVectors = useMemo(() => {
+  const resolvedVectors = useMemo(() => {
     const map: Record<string, number[]> = {};
     for (const g of garments) {
-      map[g.id] = computeDeterministicVector(g);
+      map[g.id] =
+        Array.isArray(vectors[g.id]) && vectors[g.id].length > 0
+          ? vectors[g.id]
+          : computeDeterministicVector(g);
     }
     return map;
-  }, [garments]);
+  }, [garments, vectors]);
 
   const liveHarmony = useMemo(
-    () => evaluateOutfitLocalHarmony(selectedItems, localVectors),
-    [selectedItems, localVectors]
+    () => evaluateOutfitLocalHarmony(selectedItems, resolvedVectors, profile, { occasion }),
+    [selectedItems, resolvedVectors, profile, occasion]
   );
 
   const toggleSlotItem = (category: GarmentCategory, garmentId: string) => {
@@ -354,14 +362,34 @@ export function StudioView({
               </div>
             )}
 
-            {/* Instant Vector & Color Breakdown */}
+            {/* Instant Multi-Objective OKLCH, Proportion & Personal Fit Breakdown */}
             {selectedItems.length >= 2 && (
               <div className="space-y-3 border-y border-black/[0.06] py-4 text-[13px]">
-                <div className="flex items-center justify-between text-[#6E6E73]">
-                  <span>Vector Similarity · Color Harmony</span>
-                  <span className="font-mono text-[#1D1D1F] tabular-nums">
-                    {liveHarmony.vectorScore}% · {liveHarmony.colorScore}%
-                  </span>
+                <div className="grid grid-cols-4 gap-2 py-2 px-2.5 rounded-xl bg-[#F5F5F7] text-center">
+                  <div>
+                    <p className="font-mono text-[13px] font-semibold text-[#1D1D1F] tabular-nums">
+                      {liveHarmony.personalScore}%
+                    </p>
+                    <p className="text-[10px] text-[#6E6E73]">Personal</p>
+                  </div>
+                  <div>
+                    <p className="font-mono text-[13px] font-semibold text-[#1D1D1F] tabular-nums">
+                      {liveHarmony.colorScore}%
+                    </p>
+                    <p className="text-[10px] text-[#6E6E73]">Color</p>
+                  </div>
+                  <div>
+                    <p className="font-mono text-[13px] font-semibold text-[#1D1D1F] tabular-nums">
+                      {liveHarmony.proportionScore}%
+                    </p>
+                    <p className="text-[10px] text-[#6E6E73]">Proportion</p>
+                  </div>
+                  <div>
+                    <p className="font-mono text-[13px] font-semibold text-[#1D1D1F] tabular-nums">
+                      {liveHarmony.vectorScore}%
+                    </p>
+                    <p className="text-[10px] text-[#6E6E73]">Vector</p>
+                  </div>
                 </div>
                 <p className="text-[#1D1D1F] leading-[1.55]">
                   {critique ? critique.rationale : liveHarmony.feedback}

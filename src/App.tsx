@@ -5,7 +5,7 @@
 
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { useCallback, useEffect, useState } from 'react';
-import { AdvisorView } from './components/AdvisorView';
+import { type AdvisorAttachedImage, AdvisorView } from './components/AdvisorView';
 import { AuthScreen } from './components/AuthScreen';
 import {
   type AnalyzedCloudGarmentEntry,
@@ -35,6 +35,7 @@ import {
   updateProfileInCloud,
   updateProfilePhotoInCloud,
 } from './lib/cloudWardrobe';
+import { apiJson } from './lib/apiClient';
 import { auth, signOutUser } from './lib/firebase';
 import type {
   AIProfileBlueprint,
@@ -47,22 +48,16 @@ import type {
 } from './types/styling';
 import { compressImageToDataUrl } from './utils/imageCompress';
 
-async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    ...init,
-  });
-  const text = await res.text();
-  let parsed: (T & { error?: string }) | null = null;
-  try {
-    parsed = JSON.parse(text) as T & { error?: string };
-  } catch {
-    throw new Error(`Server returned an unexpected response (${res.status}).`);
-  }
-  if (!res.ok) {
-    throw new Error(parsed?.error || `Request failed (${res.status})`);
-  }
-  return parsed;
+/**
+ * Strips heavy base64 data URLs before sending wardrobe metadata to text-only AI endpoints
+ * so 45-100 item cloud wardrobes send ~25 KB instead of 8-18 MB (avoiding 413 Payload Too Large).
+ */
+function stripGarmentImages(garments: Garment[]): Garment[] {
+  return garments.map((g) => ({ ...g, imageUrl: '' }));
+}
+
+function stripProfilePhoto(profile: UserProfile): UserProfile {
+  return { ...profile, photoUrl: '' };
 }
 
 export default function App() {
@@ -160,11 +155,23 @@ export default function App() {
   const inspectedGarment: Garment | null =
     data?.garments.find((g) => g.id === inspectedGarmentId) ?? null;
 
-  const handleSaveAnalyzedGarments = async (entries: AnalyzedCloudGarmentEntry[]) => {
+  const handleSaveAnalyzedGarments = async (
+    entries: AnalyzedCloudGarmentEntry[],
+    options?: { silent?: boolean }
+  ) => {
     await addGarmentsToCloud(user.uid, entries);
+    if (!options?.silent) {
+      setActiveTab('wardrobe');
+      showToast(
+        `Saved ${entries.length} new ${entries.length === 1 ? 'piece' : 'pieces'} to your cloud wardrobe.`
+      );
+    }
+  };
+
+  const handleBatchUploadComplete = (savedCount: number) => {
     setActiveTab('wardrobe');
     showToast(
-      `Saved ${entries.length} new ${entries.length === 1 ? 'piece' : 'pieces'} to your cloud wardrobe.`
+      `Saved ${savedCount} new ${savedCount === 1 ? 'piece' : 'pieces'} to your cloud wardrobe.`
     );
   };
 
@@ -227,6 +234,8 @@ export default function App() {
     occasion: OccasionType;
     season: SeasonTag;
     anchorItemId?: string;
+    customPrompt?: string;
+    explorationMode?: 'best' | 'fresh';
   }) => {
     if (!data) return;
     const res = await apiJson<{ combinations: OutfitCombination[]; modelUsed: string }>(
@@ -234,9 +243,10 @@ export default function App() {
       {
         method: 'POST',
         body: JSON.stringify({
-          garments: data.garments,
+          garments: stripGarmentImages(data.garments),
           vectors,
-          profile: data.profile,
+          profile: stripProfilePhoto(data.profile),
+          savedOutfits: data.savedOutfits,
           ...opts,
         }),
       }
@@ -280,7 +290,11 @@ export default function App() {
       modelUsed: string;
     }>('/api/ai/critique-outfit', {
       method: 'POST',
-      body: JSON.stringify({ items, profile: data.profile, occasion }),
+      body: JSON.stringify({
+        items: stripGarmentImages(items),
+        profile: stripProfilePhoto(data.profile),
+        occasion,
+      }),
     });
   };
 
@@ -301,17 +315,14 @@ export default function App() {
     await updateProfileInCloud(user.uid, patch);
   };
 
-  const handleUploadProfilePhoto = async (file: File) => {
-    const compressed = await compressImageToDataUrl(file, 560, 185_000);
-    await updateProfilePhotoInCloud(user.uid, compressed.dataUrl);
-    showToast('Portrait synced to cloud.');
-  };
-
-  const handleAnalyzeBlueprint = async () => {
+  const handleAnalyzeBlueprint = async (overridePhoto?: {
+    base64: string;
+    mimeType: string;
+  }) => {
     if (!data) return;
-    let photoBase64: string | null = null;
-    let photoMimeType: string | null = null;
-    if (data.profile.photoUrl.startsWith('data:')) {
+    let photoBase64: string | null = overridePhoto?.base64 ?? null;
+    let photoMimeType: string | null = overridePhoto?.mimeType ?? null;
+    if (!photoBase64 && data.profile.photoUrl.startsWith('data:')) {
       const m = data.profile.photoUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
       if (m) {
         photoMimeType = m[1];
@@ -319,24 +330,86 @@ export default function App() {
       }
     }
 
-    const res = await apiJson<{ blueprint: AIProfileBlueprint; modelUsed: string }>(
-      '/api/ai/analyze-profile',
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          profile: data.profile,
-          photoBase64,
-          photoMimeType,
-        }),
+    const res = await apiJson<{
+      blueprint: AIProfileBlueprint;
+      suggestedProfile?: {
+        skinUndertone?: UserProfile['skinUndertone'];
+        bodyType?: string;
+        preferredFits?: string[];
+        styleAesthetics?: string[];
+        stylingGoals?: string;
+      };
+      modelUsed: string;
+    }>('/api/ai/analyze-profile', {
+      method: 'POST',
+      body: JSON.stringify({
+        profile: photoBase64 ? stripProfilePhoto(data.profile) : data.profile,
+        photoBase64,
+        photoMimeType,
+      }),
+    });
+
+    if (res.suggestedProfile) {
+      const patch: Partial<UserProfile> = {};
+      if (res.suggestedProfile.skinUndertone) {
+        patch.skinUndertone = res.suggestedProfile.skinUndertone;
       }
-    );
+      if (res.suggestedProfile.bodyType?.trim()) {
+        patch.bodyType = res.suggestedProfile.bodyType.trim();
+      }
+      if (
+        Array.isArray(res.suggestedProfile.preferredFits) &&
+        res.suggestedProfile.preferredFits.length > 0
+      ) {
+        patch.preferredFits = res.suggestedProfile.preferredFits;
+      }
+      if (
+        Array.isArray(res.suggestedProfile.styleAesthetics) &&
+        res.suggestedProfile.styleAesthetics.length > 0
+      ) {
+        patch.styleAesthetics = res.suggestedProfile.styleAesthetics;
+      }
+      if (res.suggestedProfile.stylingGoals?.trim()) {
+        patch.stylingGoals = res.suggestedProfile.stylingGoals.trim();
+      }
+      if (Object.keys(patch).length > 0) {
+        await updateProfileInCloud(user.uid, patch);
+      }
+    }
 
     await updateProfileBlueprintInCloud(user.uid, res.blueprint);
-    showToast('Personal Styling Blueprint saved to cloud.');
+    showToast(
+      'AI analyzed your look, auto-filled your style profile, and personalized recommendations site-wide.'
+    );
   };
 
-  const handleSendAdvisorMessage = async (message: string) => {
+  const handleUploadProfilePhoto = async (file: File) => {
+    const compressed = await compressImageToDataUrl(file, 560, 185_000);
+    await updateProfilePhotoInCloud(user.uid, compressed.dataUrl);
+    try {
+      await handleAnalyzeBlueprint({
+        base64: compressed.base64,
+        mimeType: compressed.mimeType,
+      });
+    } catch {
+      showToast('Portrait synced to cloud. Tap "Analyze My Look with AI" to refresh your style profile.');
+    }
+  };
+
+  const handleSendAdvisorMessage = async (
+    message: string,
+    images?: AdvisorAttachedImage[]
+  ) => {
     if (!data) return;
+    const safeImages = Array.isArray(images) ? images.slice(0, 4) : [];
+    const effectiveMessage =
+      message.trim() ||
+      (safeImages.length > 1
+        ? 'Compare these items and tell me which one is the best buy for my wardrobe, colors, and proportions.'
+        : 'Should I buy this item? Analyze how well it fits my wardrobe, colors, and proportions.');
+
+    const strippedHistory = data.advisorMessages.map(({ attachedImages: _imgs, ...rest }) => rest);
+
     const reply = await apiJson<{
       content: string;
       referencedItemIds?: string[];
@@ -345,15 +418,25 @@ export default function App() {
     }>('/api/ai/advisor-chat', {
       method: 'POST',
       body: JSON.stringify({
-        message,
-        history: data.advisorMessages,
-        garments: data.garments,
+        message: effectiveMessage,
+        history: strippedHistory,
+        garments: stripGarmentImages(data.garments),
         savedOutfits: data.savedOutfits,
-        profile: data.profile,
+        profile: stripProfilePhoto(data.profile),
+        images: safeImages.map((img, idx) => ({
+          base64: img.base64,
+          mimeType: img.mimeType,
+          label: img.label || `Option ${idx + 1}`,
+        })),
       }),
     });
 
-    await addAdvisorTurnToCloud(user.uid, message, reply);
+    await addAdvisorTurnToCloud(
+      user.uid,
+      effectiveMessage,
+      reply,
+      safeImages.map((img) => img.dataUrl)
+    );
   };
 
   const handleClearAdvisorHistory = async () => {
@@ -371,8 +454,16 @@ export default function App() {
     await signOutUser();
   };
 
+  const isFullScreenAdvisor = activeTab === 'advisor' && Boolean(data);
+
   return (
-    <div className="min-h-screen flex flex-col bg-[#F5F5F7] text-[#1D1D1F]">
+    <div
+      className={`${
+        isFullScreenAdvisor
+          ? 'h-[100dvh] overflow-hidden bg-white'
+          : 'min-h-screen bg-[#F5F5F7]'
+      } flex flex-col text-[#1D1D1F]`}
+    >
       <TopNav
         activeTab={activeTab}
         onSelectTab={(tab) => {
@@ -386,7 +477,13 @@ export default function App() {
         onSignOut={() => void handleSignOut()}
       />
 
-      <main className="flex-1 max-w-[1280px] w-full mx-auto px-5 sm:px-8 pt-8 pb-24 md:pb-16">
+      <main
+        className={
+          isFullScreenAdvisor
+            ? 'flex-1 min-h-0 w-full flex flex-col pb-[53px] md:pb-0'
+            : 'flex-1 max-w-[1280px] w-full mx-auto px-5 sm:px-8 pt-8 pb-24 md:pb-16'
+        }
+      >
         {!data ? (
           <div className="space-y-8 animate-pulse" aria-busy="true" aria-label="Loading cloud wardrobe">
             <div className="h-12 w-80 bg-black/[0.06] rounded-2xl" />
@@ -413,6 +510,8 @@ export default function App() {
             {activeTab === 'combinations' && (
               <CombinationsView
                 garments={data.garments}
+                vectors={vectors}
+                profile={data.profile}
                 combinations={data.rankedCombinations}
                 initialAnchorId={anchorForCombos}
                 onGenerateRankings={handleGenerateRankings}
@@ -431,6 +530,8 @@ export default function App() {
             {activeTab === 'studio' && (
               <StudioView
                 garments={data.garments}
+                vectors={vectors}
+                profile={data.profile}
                 savedOutfits={data.savedOutfits}
                 draftSeed={studioDraft}
                 onClearDraftSeed={() => setStudioDraft(null)}
@@ -445,6 +546,8 @@ export default function App() {
               <AdvisorView
                 messages={data.advisorMessages}
                 garments={data.garments}
+                savedOutfits={data.savedOutfits}
+                profile={data.profile}
                 wardrobeGaps={data.wardrobeGaps}
                 prefillPrompt={advisorPrefill}
                 onClearPrefill={() => setAdvisorPrefill('')}
@@ -459,19 +562,21 @@ export default function App() {
                 profile={data.profile}
                 onSaveProfile={handleSaveProfile}
                 onUploadPhoto={handleUploadProfilePhoto}
-                onAnalyzeBlueprint={handleAnalyzeBlueprint}
+                onAnalyzeBlueprint={() => handleAnalyzeBlueprint()}
               />
             )}
           </>
         )}
       </main>
 
-      <footer className="hidden md:block border-t border-black/[0.06] py-6">
-        <div className="max-w-[1280px] mx-auto px-8 flex items-center justify-between text-[12px] text-[#86868B]">
-          <span>What do I Wear?</span>
-          <span>Private Cloud Wardrobe Archive & Styling Studio</span>
-        </div>
-      </footer>
+      {!isFullScreenAdvisor && (
+        <footer className="hidden md:block border-t border-black/[0.06] py-6">
+          <div className="max-w-[1280px] mx-auto px-8 flex items-center justify-between text-[12px] text-[#86868B]">
+            <span>What do I Wear?</span>
+            <span>Private Cloud Wardrobe Archive & Styling Studio</span>
+          </div>
+        </footer>
+      )}
 
       <GarmentInspector
         garment={inspectedGarment}
@@ -494,6 +599,7 @@ export default function App() {
         open={uploadOpen}
         onClose={() => setUploadOpen(false)}
         onSaveAnalyzedGarments={handleSaveAnalyzedGarments}
+        onBatchComplete={handleBatchUploadComplete}
       />
 
       {toast && (

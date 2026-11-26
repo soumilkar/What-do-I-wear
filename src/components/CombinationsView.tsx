@@ -1,21 +1,27 @@
-import { useState } from 'react';
-import { Bookmark, Check, MessageSquare, SlidersHorizontal, Sparkles } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Bookmark, Check, MessageSquare, SlidersHorizontal, Sparkles, X } from 'lucide-react';
 import type {
   Garment,
   OccasionType,
   OutfitCombination,
   SeasonTag,
+  UserProfile,
 } from '../types/styling';
+import { evaluateOutfitLocalHarmony } from '../utils/styleEngine';
 import { SmartImage } from './SmartImage';
 
 interface CombinationsViewProps {
   garments: Garment[];
+  vectors: Record<string, number[]>;
+  profile: UserProfile;
   combinations: OutfitCombination[];
   initialAnchorId?: string;
   onGenerateRankings: (opts: {
     occasion: OccasionType;
     season: SeasonTag;
     anchorItemId?: string;
+    customPrompt?: string;
+    explorationMode?: 'best' | 'fresh';
   }) => Promise<void>;
   onSaveCombination: (combo: OutfitCombination) => Promise<void>;
   onCustomizeInStudio: (combo: OutfitCombination) => void;
@@ -33,8 +39,17 @@ const OCCASIONS: OccasionType[] = [
 
 const SEASONS: SeasonTag[] = ['All-Season', 'Spring', 'Summer', 'Autumn', 'Winter'];
 
+const QUICK_VIBE_PROMPTS = [
+  'Clean monochrome look',
+  'Relaxed weekend, no jacket',
+  'Sharp dinner date',
+  'Effortless layered office',
+];
+
 export function CombinationsView({
   garments,
+  vectors,
+  profile,
   combinations,
   initialAnchorId = '',
   onGenerateRankings,
@@ -43,11 +58,25 @@ export function CombinationsView({
   onDiscussWithAdvisor,
 }: CombinationsViewProps) {
   const [occasion, setOccasion] = useState<OccasionType>('Smart Casual');
-  const [season, setSeason] = useState<SeasonTag>('Autumn');
+  const [season, setSeason] = useState<SeasonTag>('All-Season');
   const [anchorItemId, setAnchorItemId] = useState<string>(initialAnchorId);
+  const [explorationMode, setExplorationMode] = useState<'best' | 'fresh'>('best');
+  const [customPrompt, setCustomPrompt] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (initialAnchorId && garments.some((g) => g.id === initialAnchorId)) {
+      setAnchorItemId(initialAnchorId);
+    }
+  }, [initialAnchorId, garments]);
+
+  useEffect(() => {
+    if (anchorItemId && !garments.some((g) => g.id === anchorItemId)) {
+      setAnchorItemId('');
+    }
+  }, [anchorItemId, garments]);
 
   const handleRank = async () => {
     setError(null);
@@ -57,6 +86,8 @@ export function CombinationsView({
         occasion,
         season,
         anchorItemId: anchorItemId || undefined,
+        customPrompt: customPrompt.trim() || undefined,
+        explorationMode,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to rank combinations.');
@@ -66,9 +97,12 @@ export function CombinationsView({
   };
 
   const handleSave = async (combo: OutfitCombination) => {
+    setError(null);
     setSavingId(combo.id);
     try {
       await onSaveCombination(combo);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to save outfit to your lookbook.');
     } finally {
       setSavingId(null);
     }
@@ -85,7 +119,7 @@ export function CombinationsView({
             Ranked styling combinations.
           </h1>
           <p className="mt-3 text-[16px] leading-[1.6] text-[#6E6E73]">
-            Vector compatibility pre-screens your entire wardrobe locally, then our hierarchical AI ranks the top pairings specifically for your proportions, undertone, and occasion.
+            OKLCH color science, silhouette proportion physics, and 128-dim visual vectors pre-screen 8 diverse finalists locally—then our cross-encoder stylist ranks the top 5 specifically for your coloring and frame.
           </p>
         </div>
 
@@ -100,70 +134,169 @@ export function CombinationsView({
         </button>
       </section>
 
-      {/* Compact Control Strip */}
-      <section className="surface-card rounded-2xl p-5 grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div>
-          <label
-            htmlFor="combo-occasion"
-            className="block text-[12px] font-medium text-[#6E6E73] mb-1.5"
-          >
-            Occasion
-          </label>
-          <select
-            id="combo-occasion"
-            value={occasion}
-            onChange={(e) => setOccasion(e.target.value as OccasionType)}
-            className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F5F7] border border-black/[0.06] text-[14px] font-medium text-[#1D1D1F]"
-          >
-            {OCCASIONS.map((o) => (
-              <option key={o} value={o}>
-                {o}
-              </option>
-            ))}
-          </select>
+      {/* Compact Control Strip + Optional Outfit Prompt */}
+      <section className="surface-card rounded-2xl p-5 space-y-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div>
+            <label
+              htmlFor="combo-occasion"
+              className="block text-[12px] font-medium text-[#6E6E73] mb-1.5"
+            >
+              Occasion
+            </label>
+            <select
+              id="combo-occasion"
+              value={occasion}
+              onChange={(e) => setOccasion(e.target.value as OccasionType)}
+              className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F5F7] border border-black/[0.06] text-[14px] font-medium text-[#1D1D1F]"
+            >
+              {OCCASIONS.map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label
+              htmlFor="combo-season"
+              className="block text-[12px] font-medium text-[#6E6E73] mb-1.5"
+            >
+              Weather &amp; Season
+            </label>
+            <select
+              id="combo-season"
+              value={season}
+              onChange={(e) => setSeason(e.target.value as SeasonTag)}
+              className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F5F7] border border-black/[0.06] text-[14px] font-medium text-[#1D1D1F]"
+            >
+              {SEASONS.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label
+              htmlFor="combo-anchor"
+              className="block text-[12px] font-medium text-[#6E6E73] mb-1.5"
+            >
+              Anchor Piece (Optional)
+            </label>
+            <select
+              id="combo-anchor"
+              value={anchorItemId}
+              onChange={(e) => setAnchorItemId(e.target.value)}
+              className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F5F7] border border-black/[0.06] text-[14px] font-medium text-[#1D1D1F]"
+            >
+              <option value="">Any piece in wardrobe</option>
+              {garments.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name} ({g.primaryColor})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <span className="block text-[12px] font-medium text-[#6E6E73] mb-1.5">
+              Discovery Mode
+            </span>
+            <div className="grid grid-cols-2 p-1 rounded-xl bg-[#F5F5F7] border border-black/[0.06]">
+              <button
+                type="button"
+                onClick={() => setExplorationMode('best')}
+                className={`py-1.5 rounded-lg text-[13px] font-medium transition-all ${
+                  explorationMode === 'best'
+                    ? 'bg-white text-[#1D1D1F] shadow-xs'
+                    : 'text-[#6E6E73] hover:text-[#1D1D1F]'
+                }`}
+              >
+                Best Match
+              </button>
+              <button
+                type="button"
+                onClick={() => setExplorationMode('fresh')}
+                className={`py-1.5 rounded-lg text-[13px] font-medium transition-all ${
+                  explorationMode === 'fresh'
+                    ? 'bg-white text-[#1D1D1F] shadow-xs'
+                    : 'text-[#6E6E73] hover:text-[#1D1D1F]'
+                }`}
+              >
+                Fresh Rotation
+              </button>
+            </div>
+          </div>
         </div>
 
-        <div>
-          <label
-            htmlFor="combo-season"
-            className="block text-[12px] font-medium text-[#6E6E73] mb-1.5"
-          >
-            Weather & Season
-          </label>
-          <select
-            id="combo-season"
-            value={season}
-            onChange={(e) => setSeason(e.target.value as SeasonTag)}
-            className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F5F7] border border-black/[0.06] text-[14px] font-medium text-[#1D1D1F]"
-          >
-            {SEASONS.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </div>
+        {/* Optional Custom Style Request */}
+        <div className="pt-4 border-t border-black/[0.06] space-y-2.5">
+          <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-1">
+            <label
+              htmlFor="combo-custom-prompt"
+              className="text-[12px] font-medium text-[#6E6E73]"
+            >
+              Describe the vibe or outfit you want (Optional)
+            </label>
+            {profile.blueprint ? (
+              <span className="text-[12px] text-[#0071E3]">
+                Tailored to your {profile.blueprint.colorSeason} palette &amp; {profile.bodyType || 'personal'} proportions
+              </span>
+            ) : (
+              <span className="text-[12px] text-[#86868B]">
+                Scored for your {profile.skinUndertone} undertone &amp; preferred fits
+              </span>
+            )}
+          </div>
 
-        <div>
-          <label
-            htmlFor="combo-anchor"
-            className="block text-[12px] font-medium text-[#6E6E73] mb-1.5"
-          >
-            Anchor Piece (Optional)
-          </label>
-          <select
-            id="combo-anchor"
-            value={anchorItemId}
-            onChange={(e) => setAnchorItemId(e.target.value)}
-            className="w-full px-3.5 py-2.5 rounded-xl bg-[#F5F5F7] border border-black/[0.06] text-[14px] font-medium text-[#1D1D1F]"
-          >
-            <option value="">Any piece in wardrobe</option>
-            {garments.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.name} ({g.primaryColor})
-              </option>
+          <div className="relative flex items-center">
+            <input
+              id="combo-custom-prompt"
+              type="text"
+              maxLength={280}
+              value={customPrompt}
+              onChange={(e) => setCustomPrompt(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !loading) {
+                  e.preventDefault();
+                  void handleRank();
+                }
+              }}
+              placeholder="e.g. Sharp dinner date look, monochrome coffee run, or relaxed office without a jacket..."
+              className="w-full pl-3.5 pr-9 py-2.5 rounded-xl bg-[#F5F5F7] border border-black/[0.06] text-[14px] text-[#1D1D1F] placeholder:text-[#86868B] focus:outline-none focus:ring-2 focus:ring-[#0071E3]"
+            />
+            {customPrompt && (
+              <button
+                type="button"
+                onClick={() => setCustomPrompt('')}
+                aria-label="Clear outfit description"
+                className="absolute right-2.5 p-1 rounded-full text-[#86868B] hover:text-[#1D1D1F] hover:bg-black/[0.05]"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] text-[#86868B]">Quick ideas:</span>
+            {QUICK_VIBE_PROMPTS.map((idea) => (
+              <button
+                key={idea}
+                type="button"
+                onClick={() => setCustomPrompt(idea)}
+                className={`px-2.5 py-1 rounded-lg text-[12px] transition-colors ${
+                  customPrompt === idea
+                    ? 'bg-[#1D1D1F] text-white'
+                    : 'bg-[#F5F5F7] text-[#48484A] hover:bg-black/[0.08]'
+                }`}
+              >
+                {idea}
+              </button>
             ))}
-          </select>
+          </div>
         </div>
       </section>
 
@@ -193,6 +326,9 @@ export function CombinationsView({
             const pieces = combo.itemIds
               .map((id) => garmentMap.get(id))
               .filter((g): g is Garment => Boolean(g));
+            const metrics = evaluateOutfitLocalHarmony(pieces, vectors, profile, {
+              occasion: combo.occasion,
+            });
 
             return (
               <article
@@ -200,32 +336,51 @@ export function CombinationsView({
                 className="surface-card rounded-[26px] overflow-hidden grid grid-cols-1 lg:grid-cols-12 items-stretch"
               >
                 {/* Left Visual Collage of Wardrobe Pieces */}
-                <div className="lg:col-span-6 bg-[#EFEFF2] p-5 grid grid-cols-2 gap-3.5 content-center">
-                  {pieces.slice(0, 4).map((piece) => (
-                    <div
-                      key={piece.id}
-                      className="rounded-2xl overflow-hidden bg-white border border-black/[0.05] flex flex-col"
-                    >
-                      <div className="aspect-[4/4] w-full bg-[#F5F5F7] overflow-hidden">
-                        <SmartImage
-                          src={piece.imageUrl}
-                          alt={piece.name}
-                          swatchHex={piece.colorHex}
-                          className="w-full h-full object-cover"
-                        />
+                <div className="lg:col-span-6 bg-[#EFEFF2] p-5 flex flex-col justify-center gap-3.5">
+                  <div className="grid grid-cols-2 gap-3.5">
+                    {pieces.slice(0, 4).map((piece) => (
+                      <div
+                        key={piece.id}
+                        className="rounded-2xl overflow-hidden bg-white border border-black/[0.05] flex flex-col"
+                      >
+                        <div className="aspect-[4/4] w-full bg-[#F5F5F7] overflow-hidden">
+                          <SmartImage
+                            src={piece.imageUrl}
+                            alt={piece.name}
+                            swatchHex={piece.colorHex}
+                            className="w-full h-full object-cover"
+                          />
+                        </div>
+                        <div className="px-3 py-2 flex items-center justify-between gap-2">
+                          <span className="text-[12px] font-medium text-[#1D1D1F] truncate">
+                            {piece.name}
+                          </span>
+                          <span
+                            className="w-2.5 h-2.5 rounded-full border border-black/15 shrink-0"
+                            style={{ backgroundColor: piece.colorHex }}
+                            aria-hidden="true"
+                          />
+                        </div>
                       </div>
-                      <div className="px-3 py-2 flex items-center justify-between gap-2">
-                        <span className="text-[12px] font-medium text-[#1D1D1F] truncate">
-                          {piece.name}
-                        </span>
+                    ))}
+                  </div>
+
+                  {/* Perceptual OKLCH Palette Ribbon */}
+                  <div className="px-3.5 py-2 rounded-xl bg-white/80 border border-black/[0.05] flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {pieces.map((p) => (
                         <span
-                          className="w-2.5 h-2.5 rounded-full border border-black/15 shrink-0"
-                          style={{ backgroundColor: piece.colorHex }}
-                          aria-hidden="true"
+                          key={`${combo.id}_sw_${p.id}`}
+                          className="w-4 h-4 rounded-full border border-black/15"
+                          style={{ backgroundColor: p.colorHex }}
+                          title={`${p.primaryColor} (${p.undertone})`}
                         />
-                      </div>
+                      ))}
                     </div>
-                  ))}
+                    <span className="text-[11.5px] text-[#6E6E73] truncate">
+                      {metrics.paletteSummary}
+                    </span>
+                  </div>
                 </div>
 
                 {/* Right Editorial Stylist Breakdown */}
@@ -246,8 +401,36 @@ export function CombinationsView({
                           {combo.score}
                         </p>
                         <p className="mt-1 text-[11px] text-[#6E6E73] tabular-nums">
-                          Vector {combo.vectorHarmonyScore}%
+                          Match Score
                         </p>
+                      </div>
+                    </div>
+
+                    {/* Multi-Objective 4-Factor Telemetry Strip */}
+                    <div className="grid grid-cols-4 gap-2 py-2.5 px-3 rounded-xl bg-[#F5F5F7] text-center">
+                      <div>
+                        <p className="font-mono text-[14px] font-semibold text-[#1D1D1F] tabular-nums">
+                          {metrics.personalScore}%
+                        </p>
+                        <p className="text-[10.5px] text-[#6E6E73]">Personal</p>
+                      </div>
+                      <div>
+                        <p className="font-mono text-[14px] font-semibold text-[#1D1D1F] tabular-nums">
+                          {metrics.colorScore}%
+                        </p>
+                        <p className="text-[10.5px] text-[#6E6E73]">Color</p>
+                      </div>
+                      <div>
+                        <p className="font-mono text-[14px] font-semibold text-[#1D1D1F] tabular-nums">
+                          {metrics.proportionScore}%
+                        </p>
+                        <p className="text-[10.5px] text-[#6E6E73]">Proportion</p>
+                      </div>
+                      <div>
+                        <p className="font-mono text-[14px] font-semibold text-[#1D1D1F] tabular-nums">
+                          {combo.vectorHarmonyScore}%
+                        </p>
+                        <p className="text-[10.5px] text-[#6E6E73]">Vector</p>
                       </div>
                     </div>
 

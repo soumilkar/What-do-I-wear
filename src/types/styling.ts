@@ -110,6 +110,7 @@ export interface AdvisorMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  attachedImages?: string[];
   referencedItemIds?: string[];
   suggestedPurchases?: Array<{
     item: string;

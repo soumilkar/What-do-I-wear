@@ -21,4 +21,4 @@
 9. **Client-Forged Timestamp**: `CREATE /users/alice/garments/g1` with `createdAt: Timestamp(2020-01-01)` != `request.time` → `PERMISSION_DENIED`.
 10. **Immutable Field Tampering**: `UPDATE /users/alice/garments/g1` attempting to modify `ownerId` or `createdAt` → `PERMISSION_DENIED`.
 11. **Unbounded Vector Array Overflow**: `CREATE /users/alice/garments/g1` with `vector` array of 500 elements (> 256 cap) → `PERMISSION_DENIED`.
-12. **Advisor Message Tampering**: `UPDATE /users/alice/advisorMessages/m1` attempting to rewrite chat history → `PERMISSION_DENIED`.
+12. **Advisor Message Tampering / Oversized Image Attachment**: `UPDATE /users/alice/advisorMessages/m1` attempting to rewrite chat history, or `CREATE` with >4 `attachedImages` or an oversized image string (>140,000 chars) → `PERMISSION_DENIED`.

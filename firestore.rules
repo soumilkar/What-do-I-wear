@@ -308,6 +308,7 @@ service cloud.firestore {
         'ownerId',
         'role',
         'content',
+        'attachedImages',
         'referencedItemIds',
         'sources',
         'modelUsed',
@@ -317,6 +318,11 @@ service cloud.firestore {
       data.ownerId == request.auth.uid &&
       data.role in ['user', 'assistant'] &&
       isStringBounded(data.content, 1, 4000) &&
+      (!('attachedImages' in data) || (
+        data.attachedImages is list &&
+        data.attachedImages.size() <= 4 &&
+        (data.attachedImages.size() == 0 || (data.attachedImages[0] is string && data.attachedImages[0].size() <= 140000))
+      )) &&
       (!('referencedItemIds' in data) || isStringListBounded(data.referencedItemIds, 0, 6)) &&
       (!('sources' in data) || (data.sources is list && data.sources.size() <= 6 && (data.sources.size() == 0 || data.sources[0] is map))) &&
       (!('modelUsed' in data) || isStringBounded(data.modelUsed, 0, 100)) &&

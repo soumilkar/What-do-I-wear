@@ -93,7 +93,7 @@ async function runWithConcurrency<T, R>(
 export function createApiApp(): express.Express {
   const app = express();
   app.set('trust proxy', true);
-  app.use(express.json({ limit: '4mb' }));
+  app.use(express.json({ limit: '12mb' }));
 
   app.get('/healthz', (_req, res) => {
     res.status(200).json({ ok: true });
@@ -738,11 +738,17 @@ export function createApiApp(): express.Express {
       occasion?: OccasionType;
       season?: SeasonTag;
       anchorItemId?: string;
+      customPrompt?: string;
+      savedOutfits?: OutfitCombination[];
+      explorationMode?: 'best' | 'fresh';
     };
 
     const garments = Array.isArray(body.garments) ? body.garments.slice(0, 120) : [];
     const vectors = body.vectors && typeof body.vectors === 'object' ? body.vectors : {};
     const profile = body.profile;
+    const savedOutfits = Array.isArray(body.savedOutfits) ? body.savedOutfits.slice(0, 30) : [];
+    const explorationMode: 'best' | 'fresh' =
+      body.explorationMode === 'fresh' ? 'fresh' : 'best';
 
     if (garments.length < 2 || !profile) {
       res.status(400).json({
@@ -757,12 +763,21 @@ export function createApiApp(): express.Express {
       typeof body.anchorItemId === 'string' && body.anchorItemId.trim()
         ? body.anchorItemId.trim()
         : undefined;
+    const customPrompt =
+      typeof body.customPrompt === 'string' && body.customPrompt.trim()
+        ? body.customPrompt.trim().slice(0, 320)
+        : undefined;
 
+    // Stage 1: Multi-objective retrieval + MMR diversity selects 8 distinct finalists
     const candidates = generateCandidateCombinations(garments, vectors, {
       occasion,
       season,
       anchorItemId,
-      maxCandidates: 5,
+      customPrompt,
+      profile,
+      savedOutfits,
+      explorationMode,
+      maxCandidates: 8,
     });
 
     if (candidates.length === 0) {
@@ -774,11 +789,15 @@ export function createApiApp(): express.Express {
     }
 
     try {
+      // Stage 2: Cross-encoder stylist reranks 8 MMR finalists -> top 5 curated looks
       const { combinations, modelUsed } = await rankCombinationsWithAI(
         candidates,
         profile,
         occasion,
-        season
+        season,
+        customPrompt,
+        savedOutfits,
+        explorationMode
       );
       res.json({ combinations, modelUsed });
     } catch (err) {
@@ -841,12 +860,12 @@ export function createApiApp(): express.Express {
     }
 
     try {
-      const { blueprint, modelUsed } = await analyzeUserProfileWithAI(
+      const { blueprint, suggestedProfile, modelUsed } = await analyzeUserProfileWithAI(
         body.profile,
         photoBase64,
         photoMimeType
       );
-      res.json({ blueprint, modelUsed });
+      res.json({ blueprint, suggestedProfile, modelUsed });
     } catch (err) {
       res.status(502).json({
         error: err instanceof Error ? err.message : 'Failed to analyze profile.',
@@ -854,7 +873,7 @@ export function createApiApp(): express.Express {
     }
   });
 
-  // Stateless Shopping Advisor chat with full compact cloud wardrobe context
+  // Stateless Shopping Advisor chat with full compact cloud wardrobe context + optional shopping item photos
   app.post('/api/ai/advisor-chat', async (req, res) => {
     const body = req.body as {
       message?: string;
@@ -862,21 +881,47 @@ export function createApiApp(): express.Express {
       garments?: Garment[];
       savedOutfits?: OutfitCombination[];
       profile?: import('../src/types/styling.ts').UserProfile;
+      images?: Array<{ base64?: string; mimeType?: string; label?: string }>;
     };
 
+    const rawImages = Array.isArray(body.images) ? body.images.slice(0, 4) : [];
+    const validImages = rawImages
+      .filter(
+        (img): img is { base64: string; mimeType: string; label?: string } =>
+          Boolean(img) &&
+          typeof img.base64 === 'string' &&
+          img.base64.trim().length > 0 &&
+          typeof img.mimeType === 'string' &&
+          ALLOWED_IMAGE_MIME_TYPES.has(img.mimeType.trim().toLowerCase())
+      )
+      .map((img, idx) => ({
+        base64: img.base64.trim(),
+        mimeType: img.mimeType.trim().toLowerCase(),
+        label: typeof img.label === 'string' && img.label.trim() ? img.label.trim().slice(0, 60) : `Option ${idx + 1}`,
+      }));
+
     const text = typeof body.message === 'string' ? body.message.trim() : '';
-    if (!text || !body.profile) {
-      res.status(400).json({ error: 'Enter a question for your shopping advisor.' });
+    const effectiveQuestion =
+      text ||
+      (validImages.length > 1
+        ? 'Compare these items and tell me which one is the best buy for my wardrobe, style, and proportions.'
+        : validImages.length === 1
+          ? 'Should I buy this item? Analyze how well it fits my wardrobe, colors, and proportions.'
+          : '');
+
+    if (!effectiveQuestion || !body.profile) {
+      res.status(400).json({ error: 'Enter a question or upload an item photo for your shopping advisor.' });
       return;
     }
 
     try {
       const reply = await chatWithShoppingAdvisor(
-        text.slice(0, 1000),
+        effectiveQuestion.slice(0, 1000),
         Array.isArray(body.history) ? body.history.slice(-10) : [],
         Array.isArray(body.garments) ? body.garments.slice(0, 120) : [],
         Array.isArray(body.savedOutfits) ? body.savedOutfits.slice(0, 20) : [],
-        body.profile
+        body.profile,
+        validImages
       );
       res.json(reply);
     } catch (err) {
@@ -885,6 +930,43 @@ export function createApiApp(): express.Express {
       });
     }
   });
+
+  // Never let unmatched /api/* routes fall through to Vite/SPA index.html (<!doctype html>)
+  app.all('/api/*', (_req, res) => {
+    res.status(404).json({ error: 'API endpoint not found.' });
+  });
+
+  // Always serialize Express middleware errors (e.g. PayloadTooLargeError, malformed JSON) as JSON
+  app.use(
+    (
+      err: { status?: number; statusCode?: number; type?: string; message?: string },
+      req: express.Request,
+      res: express.Response,
+      next: express.NextFunction
+    ) => {
+      if (res.headersSent) {
+        next(err);
+        return;
+      }
+      if (req.path.startsWith('/api/') || req.path.startsWith('/uploads/')) {
+        const status =
+          err.type === 'entity.too.large'
+            ? 413
+            : typeof err.status === 'number'
+              ? err.status
+              : typeof err.statusCode === 'number'
+                ? err.statusCode
+                : 500;
+        const message =
+          err.type === 'entity.too.large'
+            ? 'Image or request payload is too large. Please try again with smaller images.'
+            : err.message || 'Unexpected server error.';
+        res.status(status).json({ error: message });
+        return;
+      }
+      next(err);
+    }
+  );
 
   return app;
 }

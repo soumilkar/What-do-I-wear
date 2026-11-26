@@ -5,26 +5,49 @@ import {
   compactGarmentLine,
   DEEP_REASONING_HIERARCHY,
   executeWithModelHierarchy,
+  FAST_HIERARCHY,
+  getCooldownMsForError,
   selectDiscoveredFreeModels,
 } from './aiRouter.ts';
 import type { Garment } from '../src/types/styling.ts';
 
-test('executeWithModelHierarchy cascades through tiers when earlier models fail', async () => {
+test('executeWithModelHierarchy immediately skips other tiers of the same model on 429/503', async () => {
   clearModelCooldowns();
   const calls: string[] = [];
 
   const result = await executeWithModelHierarchy(DEEP_REASONING_HIERARCHY, async (tier) => {
     calls.push(tier.id);
-    if (calls.length < 3) {
-      throw new Error(`Simulated 503 on ${tier.id}`);
+    if (tier.model === 'gemini-4-hydrogen') {
+      throw new Error(
+        '{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[{"quotaId":"GenerateRequestsPerDayPerProjectPerModel-FreeTier"},{"retryDelay":"79705s"}]}}'
+      );
     }
     return { ranked: true };
   });
 
-  assert.equal(calls.length, 3);
-  assert.equal(result.modelUsed, DEEP_REASONING_HIERARCHY[2].id);
+  // gemini-4-hydrogen (fast) must NOT be called after gemini-4-hydrogen (balanced) hit 429
+  assert.deepEqual(calls, ['gemini-4-hydrogen (balanced)', 'gemini-3.1-flash-lite (reasoned)']);
+  assert.equal(result.modelUsed, 'gemini-3.1-flash-lite (reasoned)');
   assert.deepEqual(result.data, { ranked: true });
-  assert.equal(result.attemptedModels.length, 3);
+  clearModelCooldowns();
+});
+
+test('getCooldownMsForError applies multi-hour cooldown for Free Tier daily quota exhaustion', () => {
+  const withRetryDelay = getCooldownMsForError(
+    '{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[{"retryDelay":"79705s"}]}}'
+  );
+  assert.ok(withRetryDelay >= 6 * 60 * 60_000, `Expected >= 6h cooldown, got ${withRetryDelay}ms`);
+
+  const perDayNoDelay = getCooldownMsForError(
+    '429 RESOURCE_EXHAUSTED GenerateRequestsPerDayPerProjectPerModel-FreeTier'
+  );
+  assert.ok(perDayNoDelay >= 6 * 60 * 60_000);
+
+  const perMinute = getCooldownMsForError('429 RESOURCE_EXHAUSTED rate limit');
+  assert.equal(perMinute, 90_000);
+
+  // Batch garment indexing should prioritize flash-lite to conserve hydrogen daily quota
+  assert.equal(FAST_HIERARCHY[0].model, 'gemini-3.1-flash-lite');
 });
 
 test('executeWithModelHierarchy skips models on transient cooldown for fast failover', async () => {
@@ -38,6 +61,8 @@ test('executeWithModelHierarchy skips models on transient cooldown for fast fail
     }
     return { ok: true };
   });
+
+  assert.deepEqual(firstCalls, ['gemini-4-hydrogen (balanced)', 'gemini-3.1-flash-lite (reasoned)']);
 
   const secondCalls: string[] = [];
   const second = await executeWithModelHierarchy(DEEP_REASONING_HIERARCHY, async (tier) => {

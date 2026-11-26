@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Shirt } from 'lucide-react';
 
 interface SmartImageProps {
@@ -17,6 +17,10 @@ export function SmartImage({
   swatchHex,
 }: SmartImageProps) {
   const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [src]);
 
   if (failed || !src) {
     return (

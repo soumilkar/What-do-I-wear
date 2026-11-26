@@ -100,18 +100,18 @@ export function ProfileView({
             Your personal style profile.
           </h1>
           <p className="mt-3 text-[16px] leading-[1.6] text-[#6E6E73]">
-            Upload your photo and describe your build, lifestyle, and aesthetic. Our AI distills a cached Styling Blueprint once so every outfit recommendation fits you with minimal token overhead.
+            Upload your photo and our AI automatically analyzes your coloring, features, and proportions—auto-filling your style profile and deeply personalizing every outfit, companion, and shopping recommendation across the entire app.
           </p>
         </div>
 
         <button
           type="button"
-          disabled={analyzing}
+          disabled={analyzing || uploadingPhoto}
           onClick={handleAnalyze}
           className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-[#0071E3] text-white text-[14px] font-medium whitespace-nowrap hover:bg-[#0077ED] disabled:opacity-50 self-start md:self-auto shrink-0 transition-colors"
         >
-          <Sparkles className={`w-4 h-4 ${analyzing ? 'animate-spin' : ''}`} aria-hidden="true" />
-          {analyzing ? 'Analyzing Portrait & Proportions...' : 'Analyze My Look with AI'}
+          <Sparkles className={`w-4 h-4 ${analyzing || uploadingPhoto ? 'animate-spin' : ''}`} aria-hidden="true" />
+          {analyzing || uploadingPhoto ? 'Analyzing Portrait & Filling Profile...' : 'Analyze My Look with AI'}
         </button>
       </section>
 
@@ -160,12 +160,12 @@ export function ProfileView({
                 />
                 <button
                   type="button"
-                  disabled={uploadingPhoto}
+                  disabled={uploadingPhoto || analyzing}
                   onClick={() => fileRef.current?.click()}
                   className="mt-3 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full border border-black/[0.12] text-[12px] font-medium text-[#1D1D1F] hover:bg-black/[0.03] disabled:opacity-40"
                 >
                   <Camera className="w-3.5 h-3.5" aria-hidden="true" />
-                  {uploadingPhoto ? 'Uploading...' : 'Upload Portrait Photo'}
+                  {uploadingPhoto ? 'Uploading & Analyzing...' : 'Upload Portrait Photo'}
                 </button>
               </div>
             </div>
@@ -174,7 +174,7 @@ export function ProfileView({
               <div className="pt-5 border-t border-black/[0.06] space-y-5">
                 <div className="flex items-baseline justify-between gap-2">
                   <h3 className="text-[15px] font-semibold text-[#1D1D1F]">
-                    AI Styling Blueprint
+                    What Looks Best on You
                   </h3>
                   <span className="text-[12px] text-[#6E6E73]">
                     {profile.blueprint.colorSeason} · {profile.blueprint.contrastLevel}
@@ -187,11 +187,20 @@ export function ProfileView({
 
                 <div className="space-y-3 text-[13px]">
                   <div>
-                    <p className="text-[12px] font-medium text-[#6E6E73]">Best Colors</p>
+                    <p className="text-[12px] font-medium text-[#6E6E73]">Best Colors Near Your Face</p>
                     <p className="mt-0.5 text-[#1D1D1F]">
                       {profile.blueprint.bestColors.join(' · ')}
                     </p>
                   </div>
+
+                  {profile.blueprint.avoidColors.length > 0 && (
+                    <div>
+                      <p className="text-[12px] font-medium text-[#6E6E73]">Colors to Avoid / Minimize</p>
+                      <p className="mt-0.5 text-[#6E6E73]">
+                        {profile.blueprint.avoidColors.join(' · ')}
+                      </p>
+                    </div>
+                  )}
 
                   <div>
                     <p className="text-[12px] font-medium text-[#6E6E73]">Ideal Silhouettes</p>
@@ -221,7 +230,7 @@ export function ProfileView({
               </div>
             ) : (
               <div className="pt-5 border-t border-black/[0.06] text-[13px] text-[#6E6E73]">
-                Upload a clear portrait and click &ldquo;Analyze My Look with AI&rdquo; to generate your permanent color season and proportion blueprint.
+                Upload a clear portrait photo and we&rsquo;ll automatically detect your skin undertone, color season, flattering cuts, and auto-fill your style profile to personalize recommendations everywhere.
               </div>
             )}
           </section>

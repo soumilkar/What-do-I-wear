@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, ImagePlus, Trash2, Upload, X } from 'lucide-react';
+import { apiJson } from '../lib/apiClient';
 import type { Garment } from '../types/styling';
 import { compressImageToDataUrl } from '../utils/imageCompress';
 import { MAX_BATCH_UPLOAD_FILES, validateUploadBatch } from '../utils/styleEngine';
@@ -12,7 +13,11 @@ export interface AnalyzedCloudGarmentEntry {
 interface BatchUploadModalProps {
   open: boolean;
   onClose: () => void;
-  onSaveAnalyzedGarments: (entries: AnalyzedCloudGarmentEntry[]) => Promise<void>;
+  onSaveAnalyzedGarments: (
+    entries: AnalyzedCloudGarmentEntry[],
+    options?: { silent?: boolean }
+  ) => Promise<void>;
+  onBatchComplete?: (savedCount: number) => void;
 }
 
 interface QueuedPhoto {
@@ -21,10 +26,22 @@ interface QueuedPhoto {
   previewUrl: string;
 }
 
+interface AnalyzeGarmentApiResponse {
+  analyzed?: Omit<
+    Garment,
+    'id' | 'imageUrl' | 'wearCount' | 'hasVector' | 'vectorSource' | 'modelUsed' | 'createdAt'
+  >;
+  vector?: number[];
+  vectorSource?: 'gemini-embedding-2' | 'semantic-fallback';
+  modelUsed?: string;
+  error?: string;
+}
+
 export function BatchUploadModal({
   open,
   onClose,
   onSaveAnalyzedGarments,
+  onBatchComplete,
 }: BatchUploadModalProps) {
   const [queue, setQueue] = useState<QueuedPhoto[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -36,6 +53,8 @@ export function BatchUploadModal({
     stage: '',
   });
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const queueRef = useRef<QueuedPhoto[]>([]);
+  queueRef.current = queue;
 
   useEffect(() => {
     if (!open) return;
@@ -46,13 +65,14 @@ export function BatchUploadModal({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, uploading, onClose]);
 
+  // Revoke preview URLs only when the modal component unmounts (not on every queue update)
   useEffect(() => {
     return () => {
-      for (const q of queue) {
+      for (const q of queueRef.current) {
         URL.revokeObjectURL(q.previewUrl);
       }
     };
-  }, [queue]);
+  }, []);
 
   if (!open) return null;
 
@@ -79,7 +99,7 @@ export function BatchUploadModal({
     }
 
     const nextItems: QueuedPhoto[] = incoming.map((file, idx) => ({
-      id: `${Date.now()}-${idx}-${file.name}`,
+      id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}-${file.name}`,
       file,
       previewUrl: URL.createObjectURL(file),
     }));
@@ -96,7 +116,7 @@ export function BatchUploadModal({
   };
 
   const clearQueue = () => {
-    for (const q of queue) URL.revokeObjectURL(q.previewUrl);
+    for (const q of queueRef.current) URL.revokeObjectURL(q.previewUrl);
     setQueue([]);
     setError(null);
   };
@@ -106,101 +126,139 @@ export function BatchUploadModal({
     setError(null);
     setUploading(true);
 
-    const total = queue.length;
-    const readyEntries: AnalyzedCloudGarmentEntry[] = [];
+    const snapshot = [...queue];
+    const total = snapshot.length;
+    let processedCount = 0;
+    let savedCount = 0;
+    const failedItems: Array<{ photo: QueuedPhoto; reason: string }> = [];
+    const pendingSaveBuffer: Array<{ photo: QueuedPhoto; entry: AnalyzedCloudGarmentEntry }> = [];
+
+    // Serialize Firestore chunk flushes so concurrent workers never overlap writes
+    let flushChain: Promise<void> = Promise.resolve();
+    const enqueueFlush = (force = false) => {
+      flushChain = flushChain.then(async () => {
+        if (pendingSaveBuffer.length === 0) return;
+        if (!force && pendingSaveBuffer.length < 5) return;
+
+        const batchItems = pendingSaveBuffer.splice(0, 5);
+        await onSaveAnalyzedGarments(
+          batchItems.map((b) => b.entry),
+          { silent: true }
+        );
+        savedCount += batchItems.length;
+
+        const savedIds = new Set(batchItems.map((b) => b.photo.id));
+        for (const item of batchItems) {
+          URL.revokeObjectURL(item.photo.previewUrl);
+        }
+        setQueue((prev) => prev.filter((p) => !savedIds.has(p.id)));
+      });
+      return flushChain;
+    };
 
     try {
       setProgress({
         done: 0,
         total,
-        stage: 'Optimizing photos for cloud sync and minimal AI tokens...',
+        stage: `Inspecting fabrics, fits & mapping image vectors (1 of ${total})...`,
       });
 
-      const prepared: Array<{ fileName: string; dataUrl: string; base64: string; mimeType: string }> = [];
-      for (let i = 0; i < queue.length; i++) {
-        const compressed = await compressImageToDataUrl(queue[i].file, 640, 185_000);
-        prepared.push({ fileName: queue[i].file.name, ...compressed });
-      }
-
-      // Analyze smoothly with bounded concurrency of 3 so up to 50 items complete reliably on Vercel & Cloud Run
-      let completed = 0;
-      const concurrency = 3;
+      // Concurrency of 2 keeps mobile memory low, stays gentle on free-tier Gemini limits,
+      // and avoids proxy gateway congestion on 40-50 photo batches.
+      const concurrency = 2;
       let cursor = 0;
 
       const worker = async () => {
-        while (cursor < prepared.length) {
+        while (cursor < snapshot.length) {
           const idx = cursor++;
-          const item = prepared[idx];
+          const photo = snapshot[idx];
 
-          setProgress({
-            done: completed,
-            total,
-            stage: `Inspecting fabrics, fits & mapping image vectors (${Math.min(completed + 1, total)} of ${total})...`,
-          });
+          try {
+            const compressed = await compressImageToDataUrl(photo.file, 640, 185_000);
 
-          const res = await fetch('/api/ai/analyze-garment', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              base64: item.base64,
-              mimeType: item.mimeType,
-              fileName: item.fileName,
-            }),
-          });
+            const data = await apiJson<AnalyzeGarmentApiResponse>(
+              '/api/ai/analyze-garment',
+              {
+                method: 'POST',
+                body: JSON.stringify({
+                  base64: compressed.base64,
+                  mimeType: compressed.mimeType,
+                  fileName: photo.file.name,
+                }),
+              },
+              { retries: 3, retryDelayMs: 900 }
+            );
 
-          const data = (await res.json()) as {
-            analyzed?: Omit<
-              Garment,
-              'id' | 'imageUrl' | 'wearCount' | 'hasVector' | 'vectorSource' | 'modelUsed' | 'createdAt'
-            >;
-            vector?: number[];
-            vectorSource?: 'gemini-embedding-2' | 'semantic-fallback';
-            modelUsed?: string;
-            error?: string;
-          };
+            if (!data.analyzed) {
+              throw new Error(data.error || `Failed to inspect ${photo.file.name}.`);
+            }
 
-          if (!res.ok || !data.analyzed) {
-            throw new Error(data.error || `Failed to inspect ${item.fileName}.`);
+            pendingSaveBuffer.push({
+              photo,
+              entry: {
+                garment: {
+                  ...data.analyzed,
+                  imageUrl: compressed.dataUrl,
+                  wearCount: 0,
+                  hasVector: true,
+                  vectorSource: data.vectorSource ?? 'semantic-fallback',
+                  modelUsed: data.modelUsed,
+                },
+                vector: data.vector ?? [],
+              },
+            });
+
+            if (pendingSaveBuffer.length >= 5) {
+              await enqueueFlush(false);
+            }
+          } catch (itemErr) {
+            failedItems.push({
+              photo,
+              reason:
+                itemErr instanceof Error ? itemErr.message : `Could not analyze ${photo.file.name}.`,
+            });
+          } finally {
+            processedCount += 1;
+            setProgress({
+              done: processedCount,
+              total,
+              stage:
+                processedCount < total
+                  ? `Analyzed ${processedCount} of ${total} pieces${savedCount > 0 ? ` · ${savedCount} saved to cloud` : ''}`
+                  : 'Finishing cloud wardrobe sync...',
+            });
           }
-
-          readyEntries.push({
-            garment: {
-              ...data.analyzed,
-              imageUrl: item.dataUrl,
-              wearCount: 0,
-              hasVector: true,
-              vectorSource: data.vectorSource ?? 'semantic-fallback',
-              modelUsed: data.modelUsed,
-            },
-            vector: data.vector ?? [],
-          });
-
-          completed += 1;
-          setProgress({
-            done: completed,
-            total,
-            stage: `Analyzed ${completed} of ${total} pieces`,
-          });
         }
       };
 
       await Promise.all(
-        Array.from({ length: Math.min(concurrency, prepared.length) }, () => worker())
+        Array.from({ length: Math.min(concurrency, snapshot.length) }, () => worker())
       );
 
-      setProgress({
-        done: total,
-        total,
-        stage: 'Saving garments & vectors to your private cloud wardrobe...',
-      });
+      // Flush any remaining analyzed items in chunks of 5
+      while (pendingSaveBuffer.length > 0) {
+        await enqueueFlush(true);
+      }
+      await flushChain;
 
-      // Persist in Firestore chunks of 25 (well within Firestore batch limits)
-      for (let start = 0; start < readyEntries.length; start += 25) {
-        await onSaveAnalyzedGarments(readyEntries.slice(start, start + 25));
+      if (savedCount > 0) {
+        onBatchComplete?.(savedCount);
       }
 
-      clearQueue();
-      onClose();
+      if (failedItems.length === 0) {
+        clearQueue();
+        onClose();
+      } else if (savedCount > 0) {
+        setError(
+          `Saved ${savedCount} of ${total} pieces to your cloud wardrobe. ${failedItems.length} ${
+            failedItems.length === 1 ? 'photo' : 'photos'
+          } couldn't be analyzed (${failedItems[0].reason}). Tap Analyze & Save to retry the remaining ${
+            failedItems.length === 1 ? 'photo' : 'photos'
+          }.`
+        );
+      } else {
+        setError(failedItems[0]?.reason || 'Upload failed. Please try again.');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Upload failed. Please try again.');
     } finally {
@@ -305,9 +363,9 @@ export function BatchUploadModal({
 
           {uploading && (
             <div className="space-y-2 py-2">
-              <div className="flex items-center justify-between text-[13px]">
+              <div className="flex items-center justify-between gap-2 text-[13px]">
                 <span className="font-medium text-[#1D1D1F]">{progress.stage}</span>
-                <span className="font-mono text-[#6E6E73] tabular-nums">{pct}%</span>
+                <span className="font-mono text-[#6E6E73] tabular-nums shrink-0">{pct}%</span>
               </div>
               <div className="h-1.5 w-full rounded-full bg-black/[0.06] overflow-hidden">
                 <div
@@ -364,11 +422,11 @@ export function BatchUploadModal({
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-4 border-t border-black/[0.06] bg-[#FAFAFC] flex items-center justify-between gap-4">
+        <div className="px-6 py-4 border-t border-black/[0.06] bg-[#FAFAFC] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <p className="text-[12px] text-[#6E6E73]">
             AI fabric inspection + image vectors saved to cloud
           </p>
-          <div className="flex items-center gap-2.5 shrink-0">
+          <div className="flex items-center justify-end gap-2.5 shrink-0">
             <button
               type="button"
               disabled={uploading}

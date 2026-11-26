@@ -84,8 +84,16 @@ function toIsoString(value: unknown): string {
 }
 
 function clampString(val: unknown, maxLen: number, fallback = ''): string {
-  const s = typeof val === 'string' ? val.trim() : fallback;
-  return s.slice(0, maxLen);
+  const trimmed = typeof val === 'string' ? val.trim() : '';
+  const chosen = trimmed.length > 0 ? trimmed : fallback;
+  return chosen.slice(0, maxLen);
+}
+
+function matchEnum<T extends string>(val: unknown, allowed: readonly T[], fallback: T): T {
+  if (typeof val !== 'string') return fallback;
+  const lower = val.trim().toLowerCase();
+  const matched = allowed.find((item) => item.toLowerCase() === lower);
+  return matched ?? fallback;
 }
 
 function sanitizeStringList(val: unknown, maxItems: number, maxLen = 80): string[] {
@@ -132,6 +140,12 @@ const LEGACY_SEED_GARMENT_IDS = new Set([
   'seed_charcoal_trousers',
   'seed_indigo_denim',
   'seed_espresso_loafers',
+  'seed-camel-overcoat',
+  'seed-ivory-sweater',
+  'seed-sky-oxford',
+  'seed-charcoal-trousers',
+  'seed-indigo-denim',
+  'seed-espresso-loafers',
 ]);
 
 const LEGACY_SEED_COMBO_IDS = new Set([
@@ -139,9 +153,13 @@ const LEGACY_SEED_COMBO_IDS = new Set([
   'seed_combo_2',
   'seed_combo_3',
   'seed_combo_4',
+  'seed-combo-1',
+  'seed-combo-2',
+  'seed-combo-3',
+  'seed-combo-4',
 ]);
 
-const LEGACY_SEED_SAVED_IDS = new Set(['seed_saved_1']);
+const LEGACY_SEED_SAVED_IDS = new Set(['seed_saved_1', 'seed-saved-1']);
 
 async function cleanupLegacySeededClothes(uid: string): Promise<void> {
   try {
@@ -186,12 +204,10 @@ function buildGarmentFirestoreDoc(
   garment: Omit<Garment, 'id' | 'createdAt'>,
   vector: number[]
 ) {
-  const category = VALID_CATEGORIES.includes(garment.category) ? garment.category : 'tops';
-  const undertone = VALID_UNDERTONES.includes(garment.undertone) ? garment.undertone : 'Neutral';
-  const fabricWeight = VALID_WEIGHTS.includes(garment.fabricWeight)
-    ? garment.fabricWeight
-    : 'Midweight';
-  const layeringRole = VALID_ROLES.includes(garment.layeringRole) ? garment.layeringRole : 'Base';
+  const category = matchEnum(garment.category, VALID_CATEGORIES, 'tops');
+  const undertone = matchEnum(garment.undertone, VALID_UNDERTONES, 'Neutral');
+  const fabricWeight = matchEnum(garment.fabricWeight, VALID_WEIGHTS, 'Midweight');
+  const layeringRole = matchEnum(garment.layeringRole, VALID_ROLES, 'Base');
   const colorHex = /^#[0-9A-Fa-f]{6}$/.test(garment.colorHex || '') ? garment.colorHex : '#6E6E73';
   const seasons = sanitizeStringList(garment.seasons, 5, 30);
   const occasions = sanitizeStringList(garment.occasions, 6, 30);
@@ -201,7 +217,11 @@ function buildGarmentFirestoreDoc(
     name: clampString(garment.name, 100, 'Untitled Piece'),
     category,
     subCategory: clampString(garment.subCategory, 80, 'Apparel'),
-    imageUrl: clampString(garment.imageUrl, 250000, '/src/assets/images/garment_ivory_sweater_1795548634934.jpg'),
+    imageUrl: clampString(
+      garment.imageUrl,
+      250000,
+      'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>'
+    ),
     primaryColor: clampString(garment.primaryColor, 60, 'Neutral'),
     colorHex,
     secondaryColors: sanitizeStringList(garment.secondaryColors, 5, 40),
@@ -365,7 +385,7 @@ export function subscribeUserWorkspace(
 
     const companionsByGarment: AppBootstrapData['companionsByGarment'] = {};
     for (const g of garments) {
-      companionsByGarment[g.id] = findBestCompanions(g.id, garments, vectors, 3);
+      companionsByGarment[g.id] = findBestCompanions(g.id, garments, vectors, 3, profile);
     }
     const wardrobeGaps = analyzeWardrobeGaps(garments, profile);
 
@@ -568,6 +588,9 @@ export function subscribeUserWorkspace(
           id: docSnap.id,
           role: d.role === 'user' ? 'user' : 'assistant',
           content: String(d.content ?? ''),
+          attachedImages: Array.isArray(d.attachedImages)
+            ? d.attachedImages.filter((s): s is string => typeof s === 'string' && s.length > 0).slice(0, 4)
+            : undefined,
           referencedItemIds: Array.isArray(d.referencedItemIds) ? d.referencedItemIds : undefined,
           sources: Array.isArray(d.sources) ? (d.sources as GroundingSource[]) : undefined,
           modelUsed: typeof d.modelUsed === 'string' ? d.modelUsed : undefined,
@@ -680,16 +703,14 @@ export async function reanalyzeGarmentInCloud(
   const occasions = sanitizeStringList(analyzed.occasions, 6, 30);
   const payload = {
     name: clampString(analyzed.name, 100, 'Untitled Piece'),
-    category: VALID_CATEGORIES.includes(analyzed.category) ? analyzed.category : 'tops',
+    category: matchEnum(analyzed.category, VALID_CATEGORIES, 'tops'),
     subCategory: clampString(analyzed.subCategory, 80, 'Apparel'),
     primaryColor: clampString(analyzed.primaryColor, 60, 'Neutral'),
     colorHex: /^#[0-9A-Fa-f]{6}$/.test(analyzed.colorHex || '') ? analyzed.colorHex : '#6E6E73',
     secondaryColors: sanitizeStringList(analyzed.secondaryColors, 5, 40),
-    undertone: VALID_UNDERTONES.includes(analyzed.undertone) ? analyzed.undertone : 'Neutral',
+    undertone: matchEnum(analyzed.undertone, VALID_UNDERTONES, 'Neutral'),
     fabric: clampString(analyzed.fabric, 140, 'Cotton blend'),
-    fabricWeight: VALID_WEIGHTS.includes(analyzed.fabricWeight)
-      ? analyzed.fabricWeight
-      : 'Midweight',
+    fabricWeight: matchEnum(analyzed.fabricWeight, VALID_WEIGHTS, 'Midweight'),
     texture: clampString(analyzed.texture, 80, 'Smooth matte'),
     fit: clampString(analyzed.fit, 80, 'Tailored'),
     silhouette: clampString(analyzed.silhouette, 120, 'Clean classic'),
@@ -698,7 +719,7 @@ export async function reanalyzeGarmentInCloud(
     seasons: seasons.length > 0 ? seasons : ['All-Season'],
     occasions: occasions.length > 0 ? occasions : ['Smart Casual'],
     stylingNotes: clampString(analyzed.stylingNotes, 300, ''),
-    layeringRole: VALID_ROLES.includes(analyzed.layeringRole) ? analyzed.layeringRole : 'Base',
+    layeringRole: matchEnum(analyzed.layeringRole, VALID_ROLES, 'Base'),
     hasVector: true,
     vectorSource,
     vector: sanitizeVector(vector, analyzed),
@@ -783,7 +804,7 @@ export async function saveOutfitToCloud(
   const items = validItemIds
     .map((id) => garments.find((g) => g.id === id)!)
     .filter(Boolean);
-  const localEval = evaluateOutfitLocalHarmony(items, vectors);
+  const localEval = evaluateOutfitLocalHarmony(items, vectors, profile);
 
   const id = makeDocId('outfit');
   const path = `users/${uid}/savedOutfits/${id}`;
@@ -951,18 +972,29 @@ export async function addAdvisorTurnToCloud(
     referencedItemIds?: string[];
     sources?: GroundingSource[];
     modelUsed?: string;
-  }
+  },
+  attachedImages?: string[]
 ): Promise<void> {
   const path = `users/${uid}/advisorMessages`;
   const userIdDoc = makeDocId('msg_u');
   const assistantIdDoc = makeDocId('msg_a');
 
-  const userPayload = {
+  const cleanAttached = Array.isArray(attachedImages)
+    ? attachedImages
+        .filter((url): url is string => typeof url === 'string' && url.length > 0 && url.length <= 140000)
+        .slice(0, 4)
+    : [];
+
+  const userPayload: Record<string, unknown> = {
     ownerId: uid,
     role: 'user',
     content: clampString(userContent, 4000, 'Question'),
     createdAt: serverTimestamp(),
   };
+
+  if (cleanAttached.length > 0) {
+    userPayload.attachedImages = cleanAttached;
+  }
 
   const assistantPayload: Record<string, unknown> = {
     ownerId: uid,

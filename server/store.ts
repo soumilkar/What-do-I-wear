@@ -116,8 +116,44 @@ export function loadStore(): { store: PersistedStore; vectors: Record<string, nu
     try {
       const parsedStore = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')) as PersistedStore;
       const parsedVectors = JSON.parse(fs.readFileSync(VECTORS_FILE, 'utf8')) as Record<string, number[]>;
+      const legacyGarmentIds = new Set([
+        'seed-camel-overcoat',
+        'seed-ivory-sweater',
+        'seed-sky-oxford',
+        'seed-charcoal-trousers',
+        'seed-indigo-denim',
+        'seed-espresso-loafers',
+      ]);
+      const legacyComboIds = new Set(['seed-combo-1', 'seed-combo-2', 'seed-combo-3', 'seed-combo-4']);
+      const legacySavedIds = new Set(['seed-saved-1']);
+
+      const prevCount =
+        parsedStore.garments.length +
+        parsedStore.rankedCombinations.length +
+        parsedStore.savedOutfits.length;
+
+      parsedStore.garments = parsedStore.garments.filter((g) => !legacyGarmentIds.has(g.id));
+      parsedStore.rankedCombinations = parsedStore.rankedCombinations.filter(
+        (c) => !legacyComboIds.has(c.id)
+      );
+      parsedStore.savedOutfits = parsedStore.savedOutfits.filter(
+        (s) => !legacySavedIds.has(s.id)
+      );
+      for (const id of legacyGarmentIds) {
+        delete parsedVectors[id];
+      }
+
       memoryStore = parsedStore;
       memoryVectors = parsedVectors;
+      if (
+        parsedStore.garments.length +
+          parsedStore.rankedCombinations.length +
+          parsedStore.savedOutfits.length !==
+        prevCount
+      ) {
+        atomicWriteJson(STORE_FILE, memoryStore);
+        atomicWriteJson(VECTORS_FILE, memoryVectors);
+      }
       return { store: memoryStore, vectors: memoryVectors };
     } catch (err) {
       console.warn('[Store] Corrupted JSON detected, re-seeding starter store:', err);

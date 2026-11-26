@@ -68,7 +68,7 @@ export async function compressImageToDataUrl(
 
     img.onload = () => {
       URL.revokeObjectURL(objectUrl);
-      const dimensions = [maxDim, 520, 400];
+      const dimensions = [maxDim, 520, 400, 320];
       const qualities = [0.78, 0.66, 0.54, 0.42];
 
       let bestDataUrl = '';
@@ -93,11 +93,15 @@ export async function compressImageToDataUrl(
           const candidate = canvas.toDataURL('image/jpeg', q);
           bestDataUrl = candidate;
           if (candidate.length <= maxChars) {
+            canvas.width = 0;
+            canvas.height = 0;
             const base64 = candidate.slice('data:image/jpeg;base64,'.length);
             resolve({ dataUrl: candidate, base64, mimeType: 'image/jpeg' });
             return;
           }
         }
+        canvas.width = 0;
+        canvas.height = 0;
       }
 
       if (bestDataUrl.length <= 245_000) {

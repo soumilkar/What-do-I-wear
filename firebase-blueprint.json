@@ -360,6 +360,10 @@
           "minLength": 1,
           "maxLength": 4000
         },
+        "attachedImages": {
+          "type": "array",
+          "description": "Up to 4 compressed shopping item photo data URLs attached for buy/compare advice."
+        },
         "referencedItemIds": {
           "type": "array",
           "description": "Up to 6 referenced garment IDs."

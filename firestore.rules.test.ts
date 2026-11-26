@@ -45,6 +45,7 @@ test('Firestore rules enforce strict timestamps, action-based updates, immutable
   assert.match(rules, /incoming\(\)\.ownerId == existing\(\)\.ownerId/);
   assert.match(rules, /incoming\(\)\.diff\(existing\(\)\)\.affectedKeys\(\)\.hasOnly\(/);
   assert.match(rules, /isNumberListBounded\(data\.vector, 256\)/);
+  assert.match(rules, /data\.attachedImages\.size\(\) <= 4/);
   assert.match(rules, /match \/advisorMessages\/\{messageId\}[\s\S]*?allow update:\s*if false;/);
 });
 
