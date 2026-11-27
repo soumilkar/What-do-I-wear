@@ -425,7 +425,11 @@ export function createApiApp(): express.Express {
       occasion,
       season,
       anchorItemId,
-      maxCandidates: 5,
+      profile: store.profile,
+      savedOutfits: store.savedOutfits,
+      previousCombinations: store.rankedCombinations,
+      rotationSeed: Date.now() % 100000,
+      maxCandidates: 10,
     });
 
     if (candidates.length === 0) {
@@ -547,7 +551,9 @@ export function createApiApp(): express.Express {
       const critique = await critiqueCustomOutfitWithAI(
         items,
         store.profile,
-        body.occasion || 'Smart Casual'
+        body.occasion || 'Smart Casual',
+        null,
+        store.garments
       );
       res.json(critique);
     } catch (err) {
@@ -820,6 +826,8 @@ export function createApiApp(): express.Express {
       anchorItemId?: string;
       customPrompt?: string;
       savedOutfits?: OutfitCombination[];
+      previousCombinations?: OutfitCombination[];
+      rotationSeed?: number;
       explorationMode?: 'best' | 'fresh';
     };
 
@@ -827,6 +835,13 @@ export function createApiApp(): express.Express {
     const vectors = body.vectors && typeof body.vectors === 'object' ? body.vectors : {};
     const profile = body.profile;
     const savedOutfits = Array.isArray(body.savedOutfits) ? body.savedOutfits.slice(0, 30) : [];
+    const previousCombinations = Array.isArray(body.previousCombinations)
+      ? body.previousCombinations.slice(0, 12)
+      : [];
+    const rotationSeed =
+      typeof body.rotationSeed === 'number' && Number.isFinite(body.rotationSeed)
+        ? Math.floor(body.rotationSeed)
+        : Date.now() % 100000;
     const explorationMode: 'best' | 'fresh' =
       body.explorationMode === 'fresh' ? 'fresh' : 'best';
 
@@ -848,7 +863,7 @@ export function createApiApp(): express.Express {
         ? body.customPrompt.trim().slice(0, 320)
         : undefined;
 
-    // Stage 1: Multi-objective retrieval + seasonal thermal guard + multi-layer assembly + MMR diversity
+    // Stage 1: Multi-objective retrieval + seasonal thermal guard + multi-layer assembly + stratified rotation + global-exposure MMR
     const candidates = generateCandidateCombinations(garments, vectors, {
       occasion,
       season,
@@ -856,8 +871,10 @@ export function createApiApp(): express.Express {
       customPrompt,
       profile,
       savedOutfits,
+      previousCombinations,
+      rotationSeed,
       explorationMode,
-      maxCandidates: 8,
+      maxCandidates: 10,
     });
 
     if (candidates.length === 0) {
@@ -901,12 +918,14 @@ export function createApiApp(): express.Express {
   app.post('/api/ai/critique-outfit', async (req, res) => {
     const body = req.body as {
       items?: Garment[];
+      allGarments?: Garment[];
       profile?: import('../src/types/styling.ts').UserProfile;
       portraitImage?: { base64?: string; mimeType?: string } | null;
       occasion?: OccasionType;
     };
 
     const items = Array.isArray(body.items) ? body.items.slice(0, 10) : [];
+    const allGarments = Array.isArray(body.allGarments) ? body.allGarments.slice(0, 120) : [];
     if (items.length < 2 || !body.profile) {
       res.status(400).json({ error: 'Select at least 2 pieces for an AI styling critique.' });
       return;
@@ -919,7 +938,8 @@ export function createApiApp(): express.Express {
         items,
         body.profile,
         body.occasion || 'Smart Casual',
-        portraitImage
+        portraitImage,
+        allGarments
       );
       res.json(critique);
     } catch (err) {
@@ -1031,7 +1051,7 @@ export function createApiApp(): express.Express {
     try {
       const reply = await chatWithShoppingAdvisor(
         effectiveQuestion.slice(0, 1000),
-        Array.isArray(body.history) ? body.history.slice(-10) : [],
+        Array.isArray(body.history) ? body.history.slice(-16) : [],
         Array.isArray(body.garments) ? body.garments.slice(0, 120) : [],
         Array.isArray(body.savedOutfits) ? body.savedOutfits.slice(0, 20) : [],
         body.profile,

@@ -101,15 +101,16 @@ export function AdvisorView({
 
   const filteredMentionGarments = useMemo(() => {
     const q = mentionQuery.trim().toLowerCase();
-    if (!q) return garments.slice(0, 18);
+    if (!q) return garments.slice(0, 120);
     return garments
       .filter(
         (g) =>
           g.name.toLowerCase().includes(q) ||
           g.primaryColor.toLowerCase().includes(q) ||
-          g.category.toLowerCase().includes(q)
+          g.category.toLowerCase().includes(q) ||
+          g.subCategory.toLowerCase().includes(q)
       )
-      .slice(0, 18);
+      .slice(0, 120);
   }, [garments, mentionQuery]);
 
   useEffect(() => {
@@ -307,7 +308,7 @@ export function AdvisorView({
             Deciding What to Buy?
           </h2>
           <p className="mt-1 text-[12.5px] leading-[1.5] text-[#6E6E73]">
-            Upload 1–4 store photos or screenshots. I&rsquo;ll score them against your closet, 12-season palette, and flag duplicates.
+            Upload 1–4 store photos to compare against your closet.
           </p>
         </div>
         <button
@@ -325,11 +326,8 @@ export function AdvisorView({
       <section className="space-y-3">
         <div className="px-1">
           <h2 className="text-[13px] font-semibold text-[#1D1D1F]">
-            High-ROI Wardrobe Gaps
+            Wardrobe Gaps
           </h2>
-          <p className="text-[11.5px] text-[#6E6E73]">
-            Computed from your {garments.length} pieces &amp; profile
-          </p>
         </div>
 
         <div className="space-y-2.5">
@@ -603,7 +601,7 @@ export function AdvisorView({
             {sending && (
               <div className="flex items-start">
                 <div className="rounded-2xl bg-[#F5F5F7] px-5 py-3.5 text-[14px] text-[#6E6E73]">
-                  Analyzing wardrobe DNA, 12-season palette &amp; live fashion trends...
+                  Thinking...
                 </div>
               </div>
             )}

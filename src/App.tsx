@@ -161,11 +161,11 @@ export default function App() {
   if (!authReady) {
     return (
       <div className="min-h-screen bg-[#F5F5F7] flex items-center justify-center">
-        <div className="text-center space-y-2 animate-pulse">
+        <div className="text-center space-y-1.5 animate-pulse">
           <p className="font-display text-[20px] font-semibold tracking-[-0.025em] text-[#1D1D1F]">
             What do I Wear?
           </p>
-          <p className="text-[13px] text-[#6E6E73]">Connecting to your cloud wardrobe...</p>
+          <p className="text-[13px] text-[#6E6E73]">Loading...</p>
         </div>
       </div>
     );
@@ -180,15 +180,15 @@ export default function App() {
       <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] flex items-center justify-center p-6">
         <div className="surface-card rounded-[26px] p-7 sm:p-9 max-w-md w-full space-y-5 text-center">
           <p className="text-[12px] font-semibold uppercase tracking-[0.14em] text-[#6E6E73]">
-            Verify Your Email
+            Verify Email
           </p>
           <h1 className="font-display text-[26px] font-semibold tracking-[-0.025em] text-[#1D1D1F]">
-            Check your inbox to unlock your private wardrobe.
+            Check your inbox.
           </h1>
           <p className="text-[14px] leading-relaxed text-[#6E6E73]">
             We sent a verification link to{' '}
-            <span className="font-medium text-[#1D1D1F]">{user.email}</span>. Click that link so
-            your private cloud wardrobe stays protected, then tap continue below.
+            <span className="font-medium text-[#1D1D1F]">{user.email}</span>. Click it, then
+            continue below.
           </p>
 
           {verifyNotice && (
@@ -363,6 +363,8 @@ export default function App() {
         profile: stripProfilePhoto(data.profile),
         portraitImage,
         savedOutfits: data.savedOutfits,
+        previousCombinations: data.rankedCombinations,
+        rotationSeed: Date.now(),
         ...opts,
       }),
     });
@@ -412,6 +414,7 @@ export default function App() {
       method: 'POST',
       body: JSON.stringify({
         items: stripGarmentImages(items),
+        allGarments: stripGarmentImages(data.garments),
         profile: stripProfilePhoto(data.profile),
         portraitImage,
         occasion,
@@ -688,10 +691,9 @@ export default function App() {
       </main>
 
       {!isFullScreenAdvisor && (
-        <footer className="hidden md:block border-t border-black/[0.06] py-6">
-          <div className="max-w-[1280px] mx-auto px-8 flex items-center justify-between text-[12px] text-[#86868B]">
+        <footer className="hidden md:block border-t border-black/[0.06] py-5">
+          <div className="max-w-[1280px] mx-auto px-8 flex items-center justify-center text-[12px] text-[#86868B]">
             <span>What do I Wear?</span>
-            <span>Private Cloud Wardrobe Archive & Styling Studio</span>
           </div>
         </footer>
       )}

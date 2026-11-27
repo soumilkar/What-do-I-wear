@@ -345,11 +345,9 @@ export function GarmentInspector({
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-[12px] text-[#6E6E73]">Server Vector Index</dt>
-                    <dd className="mt-0.5 font-mono text-[12px] text-[#1D1D1F]">
-                      {garment.vectorSource === 'gemini-embedding-2'
-                        ? 'Multimodal Vector Saved'
-                        : 'Attribute Vector Saved'}
+                    <dt className="text-[12px] text-[#6E6E73]">Occasions</dt>
+                    <dd className="mt-0.5 font-medium text-[#1D1D1F]">
+                      {garment.occasions.join(', ')}
                     </dd>
                   </div>
                 </dl>
@@ -362,18 +360,15 @@ export function GarmentInspector({
                 </div>
               </section>
 
-              {/* Top Vector-Matched Companions */}
+              {/* Top Matched Companions */}
               <section className="space-y-4">
-                <div className="flex items-baseline justify-between">
-                  <h3 className="text-[15px] font-semibold text-[#1D1D1F]">
-                    Best Vector-Matched Pairings
-                  </h3>
-                  <span className="text-[12px] text-[#6E6E73]">From your wardrobe</span>
-                </div>
+                <h3 className="text-[15px] font-semibold text-[#1D1D1F]">
+                  Best Pairings
+                </h3>
 
                 {companions.length === 0 ? (
                   <p className="text-[13px] text-[#6E6E73]">
-                    Upload complementary categories (tops, bottoms, outerwear, or footwear) to calculate vector pairings.
+                    Upload complementary pieces to see top pairings.
                   </p>
                 ) : (
                   <div className="divide-y divide-black/[0.06] border-y border-black/[0.06]">
@@ -406,9 +401,7 @@ export function GarmentInspector({
                             <p className="font-mono text-[14px] font-medium text-[#1D1D1F] tabular-nums">
                               {match.score}%
                             </p>
-                            <p className="text-[11px] text-[#86868B] tabular-nums">
-                              Vec {match.vectorSimilarity}%
-                            </p>
+                            <p className="text-[11px] text-[#86868B]">match</p>
                           </div>
                         </button>
                       );

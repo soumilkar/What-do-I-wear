@@ -1021,8 +1021,9 @@ export function scoreGarmentForPerson(garment: Garment, profile?: UserProfile | 
 
   // 2. Preferred fits match
   const fitText = `${garment.fit} ${garment.silhouette}`.toLowerCase();
+  const preferredFits = Array.isArray(profile.preferredFits) ? profile.preferredFits : [];
   if (
-    profile.preferredFits.some((f) => {
+    preferredFits.some((f) => {
       const words = f.toLowerCase().split(/[\s/]+/).filter((w) => w.length >= 3);
       return words.some((w) => fitText.includes(w));
     })
@@ -1031,20 +1032,25 @@ export function scoreGarmentForPerson(garment: Garment, profile?: UserProfile | 
   }
 
   // 2B. Style aesthetics alignment
-  score += scoreAestheticAlignment(garment, profile.styleAesthetics);
+  score += scoreAestheticAlignment(
+    garment,
+    Array.isArray(profile.styleAesthetics) ? profile.styleAesthetics : []
+  );
 
   // 3. AI Portrait Styling Blueprint deep personalization (12-season colors + OKLCH hex distance + silhouettes + fabrics)
   const bp = profile.blueprint;
   if (bp) {
-    const colorText = `${garment.primaryColor} ${garment.secondaryColors.join(' ')}`.toLowerCase();
+    const colorText = `${garment.primaryColor} ${(garment.secondaryColors || []).join(' ')}`.toLowerCase();
     const fabricText = `${garment.fabric} ${garment.texture}`.toLowerCase();
     const oklch = hexToOklch(garment.colorHex);
+    const bestColors = Array.isArray(bp.bestColors) ? bp.bestColors : [];
+    const avoidColors = Array.isArray(bp.avoidColors) ? bp.avoidColors : [];
 
-    const matchesBestColorName = bp.bestColors.some((c) => {
+    const matchesBestColorName = bestColors.some((c) => {
       const words = c.toLowerCase().split(/\s+/).filter((w) => w.length >= 3);
       return words.some((w) => colorText.includes(w));
     });
-    const matchesAvoidColorName = bp.avoidColors.some((c) => {
+    const matchesAvoidColorName = avoidColors.some((c) => {
       const words = c.toLowerCase().split(/\s+/).filter((w) => w.length >= 3);
       return words.some((w) => colorText.includes(w));
     });
@@ -1073,7 +1079,7 @@ export function scoreGarmentForPerson(garment: Garment, profile?: UserProfile | 
     }
 
     // 12-Season chroma/depth alignment via OKLCH
-    const seasonLower = bp.colorSeason.toLowerCase();
+    const seasonLower = (bp.colorSeason || '').toLowerCase();
     if (seasonLower.includes('deep') || seasonLower.includes('dark')) {
       if (oklch.L <= 0.55) score += 3;
       else if (oklch.L >= 0.85 && oklch.C > 0.08) score -= 3;
@@ -1420,7 +1426,9 @@ export function generateCandidateCombinations(
     customPrompt?: string;
     profile?: UserProfile | null;
     savedOutfits?: OutfitCombination[];
+    previousCombinations?: OutfitCombination[];
     explorationMode?: 'best' | 'fresh';
+    rotationSeed?: number;
     maxCandidates?: number;
   } = {}
 ): CandidateCombination[] {
@@ -1431,8 +1439,10 @@ export function generateCandidateCombinations(
     customPrompt = '',
     profile,
     savedOutfits = [],
+    previousCombinations = [],
     explorationMode = 'best',
-    maxCandidates = 8,
+    rotationSeed = 0,
+    maxCandidates = 10,
   } = options;
 
   const cleanPrompt = customPrompt.trim().toLowerCase();
@@ -1460,6 +1470,24 @@ export function generateCandidateCombinations(
   const savedKeys = new Set(
     savedOutfits.map((o) => [...o.itemIds].sort().join('|'))
   );
+  const prevComboKeys = new Set(
+    previousCombinations.map((o) => [...o.itemIds].sort().join('|'))
+  );
+  const prevItemCounts = new Map<string, number>();
+  for (const prev of previousCombinations) {
+    for (const id of prev.itemIds) {
+      prevItemCounts.set(id, (prevItemCounts.get(id) ?? 0) + 1);
+    }
+  }
+  const hashRotation = (id: string): number => {
+    const s = `${rotationSeed}:${cleanPrompt.slice(0, 24)}:${id}`;
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return ((h >>> 0) % 1000) / 1000;
+  };
 
   const anchoredGarment = anchorItemId ? items.find((i) => i.id === anchorItemId) : undefined;
 
@@ -1520,26 +1548,54 @@ export function generateCandidateCombinations(
     return [];
   }
 
+  /**
+   * Stratified slot selection:
+   * Takes top context/personal performers (60% of cap) PLUS least-recently-exposed garments (40% of cap)
+   * so large 40-100+ item closets rotate through EVERY garment instead of locking onto the same 5-6 items!
+   */
   const rankSlotByContext = (list: Garment[], cap: number): Garment[] => {
     if (list.length <= cap) return list;
-    return [...list]
+    const scoreItem = (g: Garment, includeRotationJitter: boolean) => {
+      let s = scoreGarmentPromptRelevance(g, promptTokens, cleanPrompt);
+      if (profile) s += (scoreGarmentForPerson(g, profile) - 70) * 0.35;
+      if (occasion && g.occasions.includes(occasion)) s += 3.5;
+      if (
+        effectiveSeason !== 'All-Season' &&
+        (g.seasons.includes(effectiveSeason) || g.seasons.includes('All-Season'))
+      ) {
+        s += 3;
+      }
+      if (explorationMode === 'fresh' && g.wearCount === 0) s += 3.5;
+      // Apply previous-batch rotation cooldown so consecutive generations surface fresh garments
+      const prevHits = prevItemCounts.get(g.id) ?? 0;
+      if (prevHits > 0 && g.id !== anchorItemId) {
+        s -= explorationMode === 'fresh' ? prevHits * 14 : prevHits * 9;
+      }
+      if (includeRotationJitter) {
+        s += (hashRotation(g.id) - 0.5) * (explorationMode === 'fresh' ? 9 : 5);
+      }
+      return s;
+    };
+
+    const primaryCount = prevItemCounts.size > 0 ? Math.ceil(cap * 0.5) : Math.ceil(cap * 0.6);
+    const byQuality = [...list].sort((a, b) => scoreItem(b, true) - scoreItem(a, true));
+    const chosen = byQuality.slice(0, primaryCount);
+    const chosenIds = new Set(chosen.map((g) => g.id));
+
+    // Reserve remaining slot pool for under-exposed / unshown items across the rest of the closet
+    const remaining = list
+      .filter((g) => !chosenIds.has(g.id))
       .sort((a, b) => {
-        const scoreItem = (g: Garment) => {
-          let s = scoreGarmentPromptRelevance(g, promptTokens, cleanPrompt);
-          if (profile) s += (scoreGarmentForPerson(g, profile) - 70) * 0.35;
-          if (occasion && g.occasions.includes(occasion)) s += 3.5;
-          if (
-            effectiveSeason !== 'All-Season' &&
-            (g.seasons.includes(effectiveSeason) || g.seasons.includes('All-Season'))
-          ) {
-            s += 3;
-          }
-          if (explorationMode === 'fresh' && g.wearCount === 0) s += 3;
-          return s;
-        };
-        return scoreItem(b) - scoreItem(a);
+        const aPrev = prevItemCounts.get(a.id) ?? 0;
+        const bPrev = prevItemCounts.get(b.id) ?? 0;
+        if (aPrev !== bPrev) return aPrev - bPrev;
+        const aScore = scoreItem(a, true) + (a.wearCount === 0 ? 3 : 0);
+        const bScore = scoreItem(b, true) + (b.wearCount === 0 ? 3 : 0);
+        return bScore - aScore;
       })
-      .slice(0, cap);
+      .slice(0, cap - chosen.length);
+
+    return [...chosen, ...remaining];
   };
 
   // Pre-filter anchored slot before enumeration
@@ -1560,15 +1616,31 @@ export function generateCandidateCombinations(
     }
   }
 
-  // Build valid Upper-Body Stacks:
+  // Build valid Upper-Body Stacks with wider full-closet coverage:
   // 1. Standalone Base Top: [base] (shirts, tees, polos — great for Summer, Spring, smart casual)
   // 2. Layered Base + Mid: [base, mid] (shirt/tee UNDER sweater/cardigan/vest/hoodie — real layering!)
   // 3. Standalone Mid ONLY if the user has zero base tops in their entire closet OR thin standalone turtleneck
-  const cappedBase = rankSlotByContext(baseTops, 10);
-  const cappedMid = rankSlotByContext(midLayers, 7);
-  const cappedBottoms = rankSlotByContext(bottoms, 10);
-  const cappedOuter = rankSlotByContext(outerwear, 5);
-  const cappedShoes = rankSlotByContext(footwear, 5);
+  const cappedBase = rankSlotByContext(baseTops, 14);
+  const cappedMid = rankSlotByContext(midLayers, 8);
+  const cappedBottoms = rankSlotByContext(bottoms, 11);
+  const cappedOuter = rankSlotByContext(outerwear, 6);
+  const cappedShoes = rankSlotByContext(footwear, 6);
+  const cappedAccessories = rankSlotByContext(accessories, 6);
+
+  // Pre-compute vectors once for all capped garments to keep 44+ item scoring super fast (<100ms)
+  const resolvedVectors: Record<string, number[]> = { ...vectors };
+  for (const g of [
+    ...cappedBase,
+    ...cappedMid,
+    ...cappedBottoms,
+    ...cappedOuter,
+    ...cappedShoes,
+    ...cappedAccessories,
+  ]) {
+    if (!resolvedVectors[g.id]) {
+      resolvedVectors[g.id] = computeDeterministicVector(g);
+    }
+  }
 
   const upperStacks: Garment[][] = [];
 
@@ -1604,35 +1676,54 @@ export function generateCandidateCombinations(
     return [];
   }
 
-  // Cap upper stacks cleanly for <25ms latency on large wardrobes
-  const rankedUpperStacks =
-    upperStacks.length <= 28
-      ? upperStacks
-      : [...upperStacks]
-          .sort((a, b) => {
-            const evalStack = (stack: Garment[]) => {
-              let s = 0;
-              for (const g of stack) {
-                s += scoreGarmentPromptRelevance(g, promptTokens, cleanPrompt);
-                if (profile) s += (scoreGarmentForPerson(g, profile) - 70) * 0.3;
-              }
-              if (stack.length === 2) {
-                const pair = scorePairCompatibility(
-                  stack[0],
-                  stack[1],
-                  vectors[stack[0].id] ?? computeDeterministicVector(stack[0]),
-                  vectors[stack[1].id] ?? computeDeterministicVector(stack[1])
-                );
-                s += (pair.score - 75) * 0.6;
-                if (effectiveSeason === 'Autumn' || effectiveSeason === 'Winter' || wantLayers) {
-                  s += 6;
-                }
-              }
-              return s;
-            };
-            return evalStack(b) - evalStack(a);
-          })
-          .slice(0, 28);
+  // Cap upper stacks cleanly while preventing any 1-2 tops from monopolizing all stacks
+  const rankedUpperStacks = (() => {
+    const stackCap = 26;
+    if (upperStacks.length <= stackCap) return upperStacks;
+    const scoredStacks = [...upperStacks].sort((a, b) => {
+      const evalStack = (stack: Garment[]) => {
+        let s = 0;
+        for (const g of stack) {
+          s += scoreGarmentPromptRelevance(g, promptTokens, cleanPrompt);
+          if (profile) s += (scoreGarmentForPerson(g, profile) - 70) * 0.3;
+          const prevHits = prevItemCounts.get(g.id) ?? 0;
+          if (prevHits > 0 && g.id !== anchorItemId) {
+            s -= explorationMode === 'fresh' ? prevHits * 10 : prevHits * 6;
+          }
+          s += (hashRotation(g.id) - 0.5) * 4;
+        }
+        if (stack.length === 2) {
+          const pair = scorePairCompatibility(
+            stack[0],
+            stack[1],
+            resolvedVectors[stack[0].id],
+            resolvedVectors[stack[1].id]
+          );
+          s += (pair.score - 75) * 0.6;
+          if (effectiveSeason === 'Autumn' || effectiveSeason === 'Winter' || wantLayers) {
+            s += 6;
+          }
+        }
+        return s;
+      };
+      return evalStack(b) - evalStack(a);
+    });
+
+    const diverseStacks: Garment[][] = [];
+    const stackItemUses = new Map<string, number>();
+    for (const stack of scoredStacks) {
+      if (diverseStacks.length >= stackCap) break;
+      const overloaded = stack.some(
+        (g) => g.id !== anchorItemId && (stackItemUses.get(g.id) ?? 0) >= 3
+      );
+      if (overloaded) continue;
+      diverseStacks.push(stack);
+      for (const g of stack) {
+        stackItemUses.set(g.id, (stackItemUses.get(g.id) ?? 0) + 1);
+      }
+    }
+    return diverseStacks.length > 0 ? diverseStacks : scoredStacks.slice(0, stackCap);
+  })();
 
   const candidates: CandidateCombination[] = [];
   const seenKeys = new Set<string>();
@@ -1663,8 +1754,93 @@ export function generateCandidateCombinations(
     const primaryUpper = upperStack[upperStack.length - 1];
     const hasMidLayer = upperStack.length >= 2;
 
+    // Pre-select best-matching outerwear & footwear subsets for this upper stack to avoid 40k+ Cartesian blowup
+    const localOuterOptions: Array<Garment | null> =
+      outerOptions.length <= 3
+        ? outerOptions
+        : (() => {
+            const nonNull = outerOptions.filter((o): o is Garment => o !== null);
+            const rankedOuter = [...nonNull].sort((a, b) => {
+              const sA =
+                scorePairCompatibility(
+                  primaryUpper,
+                  a,
+                  resolvedVectors[primaryUpper.id],
+                  resolvedVectors[a.id]
+                ).score -
+                (a.id !== anchorItemId ? (prevItemCounts.get(a.id) ?? 0) * 6 : 0) +
+                (hashRotation(`${primaryUpper.id}:${a.id}`) - 0.5) * 8;
+              const sB =
+                scorePairCompatibility(
+                  primaryUpper,
+                  b,
+                  resolvedVectors[primaryUpper.id],
+                  resolvedVectors[b.id]
+                ).score -
+                (b.id !== anchorItemId ? (prevItemCounts.get(b.id) ?? 0) * 6 : 0) +
+                (hashRotation(`${primaryUpper.id}:${b.id}`) - 0.5) * 8;
+              return sB - sA;
+            });
+            const picked: Array<Garment | null> = rankedOuter.slice(0, 2);
+            if (outerOptions.includes(null)) picked.push(null);
+            return picked;
+          })();
+
     for (const bottom of cappedBottoms) {
-      for (const outer of outerOptions) {
+      const localShoeOptions: Array<Garment | null> =
+        shoeOptions.length <= 3
+          ? shoeOptions
+          : (() => {
+              const nonNull = shoeOptions.filter((s): s is Garment => s !== null);
+              const rankedShoes = [...nonNull].sort((a, b) => {
+                const sA =
+                  scorePairCompatibility(
+                    bottom,
+                    a,
+                    resolvedVectors[bottom.id],
+                    resolvedVectors[a.id]
+                  ).score -
+                  (a.id !== anchorItemId ? (prevItemCounts.get(a.id) ?? 0) * 6 : 0) +
+                  (hashRotation(`${bottom.id}:${a.id}`) - 0.5) * 8;
+                const sB =
+                  scorePairCompatibility(
+                    bottom,
+                    b,
+                    resolvedVectors[bottom.id],
+                    resolvedVectors[b.id]
+                  ).score -
+                  (b.id !== anchorItemId ? (prevItemCounts.get(b.id) ?? 0) * 6 : 0) +
+                  (hashRotation(`${bottom.id}:${b.id}`) - 0.5) * 8;
+                return sB - sA;
+              });
+              return rankedShoes.slice(0, 3);
+            })();
+
+      // Pick best accessory once per (upperStack, bottom) pair instead of inside every inner combo
+      let bestPairAccessory: Garment | null = null;
+      if (anchoredGarment?.category === 'accessories') {
+        bestPairAccessory = anchoredGarment;
+      } else if (cappedAccessories.length > 0) {
+        let bestAccScore = 76;
+        for (const acc of cappedAccessories) {
+          if (effectiveSeason === 'Summer' && isSummerUnsuitable(acc)) continue;
+          const s =
+            scorePairCompatibility(
+              primaryUpper,
+              acc,
+              resolvedVectors[primaryUpper.id],
+              resolvedVectors[acc.id]
+            ).score -
+            (prevItemCounts.get(acc.id) ?? 0) * 4 +
+            (hashRotation(`${primaryUpper.id}:${bottom.id}:${acc.id}`) - 0.5) * 5;
+          if (s > bestAccScore) {
+            bestAccScore = s;
+            bestPairAccessory = acc;
+          }
+        }
+      }
+
+      for (const outer of localOuterOptions) {
         // Avoid over-stacking in Spring if already wearing Base + Mid + Heavy Coat
         if (
           effectiveSeason === 'Spring' &&
@@ -1676,32 +1852,10 @@ export function generateCandidateCombinations(
           continue;
         }
 
-        for (const shoe of shoeOptions) {
-          const comboItemsRaw = [...upperStack, bottom, outer, shoe].filter(
+        for (const shoe of localShoeOptions) {
+          const comboItemsRaw = [...upperStack, bottom, outer, shoe, bestPairAccessory].filter(
             (x): x is Garment => x !== null
           );
-
-          // Include anchored accessory, or best-matching accessory if available
-          if (anchoredGarment?.category === 'accessories') {
-            comboItemsRaw.push(anchoredGarment);
-          } else if (accessories.length > 0) {
-            let bestAcc: Garment | null = null;
-            let bestAccScore = 76;
-            for (const acc of accessories.slice(0, 6)) {
-              if (effectiveSeason === 'Summer' && isSummerUnsuitable(acc)) continue;
-              const s = scorePairCompatibility(
-                primaryUpper,
-                acc,
-                vectors[primaryUpper.id] ?? computeDeterministicVector(primaryUpper),
-                vectors[acc.id] ?? computeDeterministicVector(acc)
-              ).score;
-              if (s > bestAccScore) {
-                bestAccScore = s;
-                bestAcc = acc;
-              }
-            }
-            if (bestAcc) comboItemsRaw.push(bestAcc);
-          }
 
           if (anchorItemId && !comboItemsRaw.some((c) => c.id === anchorItemId)) {
             continue;
@@ -1716,7 +1870,7 @@ export function generateCandidateCombinations(
           if (seenKeys.has(key)) continue;
           seenKeys.add(key);
 
-          const evalRes = evaluateOutfitLocalHarmony(comboItems, vectors, profile, {
+          const evalRes = evaluateOutfitLocalHarmony(comboItems, resolvedVectors, profile, {
             occasion,
             tasteCentroid,
           });
@@ -1793,15 +1947,32 @@ export function generateCandidateCombinations(
             }
           }
 
-          // Closet rotation & freshness score
+          // Closet rotation, previous-batch cooldown & freshness score
           const avgWear =
             comboItems.reduce((acc, g) => acc + g.wearCount, 0) / comboItems.length;
           const isAlreadySaved = savedKeys.has(key);
+          const isExactPrevRepeat = prevComboKeys.has(key);
           let freshnessScore = Math.max(55, Math.min(98, Math.round(92 - avgWear * 5)));
           if (isAlreadySaved) freshnessScore = Math.max(45, freshnessScore - 18);
+          if (isExactPrevRepeat) freshnessScore = Math.max(40, freshnessScore - 22);
+
+          // Rotate decisively away from garments shown in the immediately preceding batch
+          let prevExposureHits = 0;
+          for (const g of comboItems) {
+            if (g.id !== anchorItemId && (prevItemCounts.get(g.id) ?? 0) > 0) {
+              prevExposureHits += 1;
+            }
+          }
+          if (prevExposureHits > 0) {
+            const perItemPenalty = explorationMode === 'fresh' ? 7 : 4.5;
+            bonus -= Math.min(22, Math.round(prevExposureHits * perItemPenalty));
+          }
+          if (isExactPrevRepeat) {
+            bonus -= explorationMode === 'fresh' ? 16 : 10;
+          }
 
           if (explorationMode === 'fresh') {
-            bonus += Math.round((freshnessScore - 75) * 0.25);
+            bonus += Math.round((freshnessScore - 75) * 0.28);
             if (isAlreadySaved) bonus -= 6;
           } else if (isAlreadySaved) {
             bonus -= 3;
@@ -1829,10 +2000,13 @@ export function generateCandidateCombinations(
 
   candidates.sort((a, b) => b.localScore - a.localScore);
 
-  // Maximal Marginal Relevance (MMR) selection: balances top quality with genuine variety
-  const pool = candidates.slice(0, Math.min(candidates.length, 180));
+  // Global-Exposure-Aware MMR Selection:
+  // Balances outfit quality with BOTH pairwise novelty AND a global per-item exposure cap
+  // so 5-10 ranked outfits showcase 15-25+ distinct garments instead of recycling the same 5-6 items!
+  const pool = candidates.slice(0, Math.min(candidates.length, 320));
   const selected: CandidateCombination[] = [];
-  const lambda = explorationMode === 'fresh' ? 0.62 : 0.72;
+  const globalItemExposure = new Map<string, number>();
+  const lambda = explorationMode === 'fresh' ? 0.56 : 0.66;
 
   while (selected.length < maxCandidates && pool.length > 0) {
     let bestIdx = 0;
@@ -1857,15 +2031,50 @@ export function generateCandidateCombinations(
         if (effectiveSim > maxJaccard) maxJaccard = effectiveSim;
       }
 
+      // Global exposure pressure: strongly discourage any single top/bottom/shoe from dominating every look
+      let exposurePenalty = 0;
+      let freshItemBonus = 0;
+      let prevBatchPenalty = 0;
+      for (const id of cand.itemIds) {
+        if (id === anchorItemId) continue;
+        const usedCount = globalItemExposure.get(id) ?? 0;
+        if (usedCount === 0) {
+          freshItemBonus += 0.045;
+        } else if (usedCount === 1) {
+          exposurePenalty += 0.08;
+        } else {
+          // Hard pressure against appearing 3+ times across the finalist slate
+          exposurePenalty += 0.18 * usedCount;
+        }
+
+        if (prevItemCounts.size > 0) {
+          const prevHits = prevItemCounts.get(id) ?? 0;
+          if (prevHits > 0) {
+            prevBatchPenalty += explorationMode === 'fresh' ? 0.12 : 0.075;
+          } else {
+            freshItemBonus += 0.025;
+          }
+        }
+      }
+
       const normRel = cand.localScore / 100;
-      const mmr = lambda * normRel - (1 - lambda) * maxJaccard;
+      const mmr =
+        lambda * normRel -
+        (1 - lambda) * maxJaccard -
+        exposurePenalty -
+        prevBatchPenalty +
+        Math.min(0.2, freshItemBonus);
       if (mmr > bestMmr) {
         bestMmr = mmr;
         bestIdx = i;
       }
     }
 
-    selected.push(pool.splice(bestIdx, 1)[0]);
+    const winner = pool.splice(bestIdx, 1)[0];
+    selected.push(winner);
+    for (const id of winner.itemIds) {
+      globalItemExposure.set(id, (globalItemExposure.get(id) ?? 0) + 1);
+    }
   }
 
   return selected;
@@ -1939,8 +2148,7 @@ export function computeWardrobeIntelligenceSummary(
     `Undertones: Warm=${undertoneSplit.warm}, Cool=${undertoneSplit.cool}, Neutral=${undertoneSplit.neutral}`,
     `Formality Mix: Casual(1-4)=${formalityBand.casual}, SmartCasual(5-7)=${formalityBand.smartCasual}, Formal(8-10)=${formalityBand.formal}`,
     `Dominant Colors: ${dominantSwatches.map((s) => `${s.color}(${s.count})`).join(', ') || 'None'}`,
-    `Personal Blueprint Alignment Avg: ${blueprintAlignmentAvg}/100 | Saved Looks: ${savedOutfits.length}`,
-    `Unworn Pieces (${unworn.length}): ${unworn.slice(0, 5).map((u) => `${u.id}|${u.name}`).join('; ') || 'None'}`,
+    `Personal Blueprint Alignment Avg: ${blueprintAlignmentAvg}/100 | Saved Looks: ${savedOutfits.length} | Unworn Pieces: ${unworn.length}/${garments.length}`,
     `Top Detected Gaps: ${gaps.map((g) => `${g.title} (${g.priority})`).join('; ') || 'Balanced'}`,
   ].join('\n');
 
@@ -2086,7 +2294,7 @@ export function analyzeWardrobeGaps(
       title: 'Breathable Warm-Weather Knit or Linen Shirt',
       category: 'tops',
       priority: 'Medium',
-      reason: `Ideal for ${profile.climate.toLowerCase()} transitions and effortless weight-stepped layering.`,
+      reason: `Ideal for ${(profile.climate || 'seasonal').toLowerCase()} transitions and weight-stepped layering.`,
       suggestedPrompt:
         'What breathable summer or layering tops are trending right now that match my skin undertone and aesthetic?',
     });

@@ -1,29 +1,11 @@
 import { useState } from 'react';
-import { Eye, EyeOff, Layers, Lock, Mail, ShieldCheck, Sparkles, User } from 'lucide-react';
+import { Eye, EyeOff, Lock, Mail, User } from 'lucide-react';
 import {
   resetPasswordWithEmail,
   signInWithEmail,
   signInWithGoogle,
   signUpWithEmail,
 } from '../lib/firebase';
-
-const PREVIEW_CARDS = [
-  {
-    src: '/src/assets/images/garment_camel_overcoat_1795548620677.jpg',
-    label: 'Camel Wool Overcoat',
-    meta: 'Heavyweight · Structured',
-  },
-  {
-    src: '/src/assets/images/garment_ivory_sweater_1795548634934.jpg',
-    label: 'Ivory Merino Crewneck',
-    meta: 'Fine-gauge · Relaxed',
-  },
-  {
-    src: '/src/assets/images/garment_charcoal_trousers_1795548618728.jpg',
-    label: 'Charcoal Wool Trousers',
-    meta: 'Worsted · High-rise',
-  },
-];
 
 type AuthMode = 'signin' | 'signup' | 'reset';
 
@@ -130,48 +112,18 @@ export function AuthScreen() {
 
   return (
     <div className="min-h-screen bg-[#F5F5F7] text-[#1D1D1F] flex flex-col">
-      <header className="h-16 max-w-[1280px] w-full mx-auto px-6 sm:px-8 flex items-center justify-between">
-        <span className="font-display text-[17px] font-semibold tracking-[-0.025em]">
-          What do I Wear?
-        </span>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => switchMode(mode === 'signup' ? 'signin' : 'signup')}
-            className="px-3.5 py-2 rounded-full text-[13px] font-medium text-[#1D1D1F] hover:bg-black/[0.05] disabled:opacity-50 transition-colors"
-          >
-            {mode === 'signup' ? 'Sign In' : 'Create Account'}
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void handleGoogleSignIn()}
-            className="px-4 py-2 rounded-full bg-[#1D1D1F] text-white text-[13px] font-medium hover:bg-[#3A3A3C] disabled:opacity-50 transition-colors"
-          >
-            {googleLoading ? 'Signing in...' : 'Google Sign In'}
-          </button>
-        </div>
-      </header>
-
-      <main className="flex-1 max-w-[1200px] w-full mx-auto px-6 sm:px-8 py-4 lg:py-6 grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10 items-center">
-        {/* Left editorial copy & Auth Card */}
-        <div className="lg:col-span-6 space-y-4">
-          <div className="space-y-2">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#6E6E73]">
-              Personal AI Wardrobe Studio
-            </p>
-            <h1 className="font-display text-[34px] sm:text-[42px] font-semibold leading-[1.06] tracking-[-0.035em] text-[#1D1D1F]">
-              Your closet in the cloud. Styled to perfection.
+      <main className="flex-1 flex flex-col items-center justify-center px-5 py-10">
+        <div className="w-full max-w-[420px] space-y-6">
+          <div className="text-center space-y-1.5">
+            <h1 className="font-display text-[32px] sm:text-[36px] font-semibold tracking-[-0.035em] leading-[1.08] text-[#1D1D1F]">
+              What do I Wear?
             </h1>
-            <p className="text-[14.5px] leading-relaxed text-[#6E6E73] max-w-[490px]">
-              Upload your wardrobe and portrait once. Get season-accurate layered outfits, OKLCH color matching, and shopping advice personalized to what actually looks best on you.
+            <p className="text-[14.5px] text-[#6E6E73]">
+              Personal AI stylist and wardrobe studio.
             </p>
           </div>
 
-          {/* Auth Card: Email & Password + Google */}
-          <div className="surface-card rounded-[22px] p-5 space-y-3.5 max-w-[440px]">
-            {/* Mode Switcher */}
+          <div className="surface-card rounded-[24px] p-6 sm:p-7 space-y-4">
             {mode !== 'reset' ? (
               <div
                 role="tablist"
@@ -338,10 +290,10 @@ export function AuthScreen() {
                       ? 'Sending Reset Link...'
                       : 'Signing In...'
                   : mode === 'signup'
-                    ? 'Create Account with Email'
+                    ? 'Create Account'
                     : mode === 'reset'
                       ? 'Send Password Reset Email'
-                      : 'Sign In with Email'}
+                      : 'Sign In'}
               </button>
             </form>
 
@@ -383,62 +335,6 @@ export function AuthScreen() {
                 </button>
               </>
             )}
-
-            <p className="text-[11.5px] text-[#86868B] text-center">
-              Your wardrobe, portrait analysis, and lookbooks stay strictly private to your verified account.
-            </p>
-          </div>
-
-          <div className="pt-3 border-t border-black/[0.07] grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="space-y-1">
-              <Layers className="w-4 h-4 text-[#1D1D1F]" aria-hidden="true" />
-              <p className="text-[12.5px] font-semibold text-[#1D1D1F]">Real Layering</p>
-              <p className="text-[11.5px] text-[#6E6E73] leading-snug">
-                Base shirts under knits, seasonal guards, and complete stacks.
-              </p>
-            </div>
-            <div className="space-y-1">
-              <Sparkles className="w-4 h-4 text-[#1D1D1F]" aria-hidden="true" />
-              <p className="text-[12.5px] font-semibold text-[#1D1D1F]">Portrait Personalization</p>
-              <p className="text-[11.5px] text-[#6E6E73] leading-snug">
-                Your photo and 12-season palette power every outfit and tip.
-              </p>
-            </div>
-            <div className="space-y-1">
-              <ShieldCheck className="w-4 h-4 text-[#1D1D1F]" aria-hidden="true" />
-              <p className="text-[12.5px] font-semibold text-[#1D1D1F]">Private Cloud Sync</p>
-              <p className="text-[11.5px] text-[#6E6E73] leading-snug">
-                Sign in with Email &amp; Password or Google on any device.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Right visual editorial showcase */}
-        <div className="lg:col-span-6">
-          <div className="grid grid-cols-3 gap-4 items-end">
-            {PREVIEW_CARDS.map((card, idx) => (
-              <div
-                key={card.label}
-                className={`surface-card rounded-[24px] overflow-hidden ${
-                  idx === 1 ? 'lg:-translate-y-5' : ''
-                }`}
-              >
-                <div className="aspect-[3/4] bg-[#ECECE6] overflow-hidden">
-                  <img
-                    src={card.src}
-                    alt={card.label}
-                    className="w-full h-full object-cover"
-                  />
-                </div>
-                <div className="p-3.5">
-                  <p className="text-[12px] font-semibold text-[#1D1D1F] truncate">
-                    {card.label}
-                  </p>
-                  <p className="text-[11px] text-[#6E6E73] truncate mt-0.5">{card.meta}</p>
-                </div>
-              </div>
-            ))}
           </div>
         </div>
       </main>

@@ -43,43 +43,36 @@ type StudioSlotKey = 'base' | 'mid' | 'bottoms' | 'outerwear' | 'footwear' | 'ac
 const SLOTS: Array<{
   key: StudioSlotKey;
   label: string;
-  hint: string;
   matches: (g: Garment) => boolean;
 }> = [
   {
     key: 'base',
     label: 'Base Layer (Shirt / Tee / Polo)',
-    hint: 'Worn directly on skin or layered cleanly underneath a sweater or jacket',
     matches: (g) => g.category === 'tops' && classifyTopLayerRole(g) === 'base',
   },
   {
     key: 'mid',
     label: 'Mid Layer (Sweater / Cardigan / Knit)',
-    hint: 'Optional warm layer worn over your base shirt or tee',
     matches: (g) => g.category === 'tops' && classifyTopLayerRole(g) === 'mid',
   },
   {
     key: 'bottoms',
-    label: 'Bottom',
-    hint: 'Trousers, jeans, chinos, shorts, or skirts',
+    label: 'Bottoms',
     matches: (g) => g.category === 'bottoms',
   },
   {
     key: 'outerwear',
     label: 'Outerwear',
-    hint: 'Coat, blazer, overshirt, or jacket',
     matches: (g) => g.category === 'outerwear',
   },
   {
     key: 'footwear',
     label: 'Footwear',
-    hint: 'Shoes, boots, loafers, or sneakers',
     matches: (g) => g.category === 'footwear',
   },
   {
     key: 'accessories',
-    label: 'Accessory',
-    hint: 'Watch, belt, bag, scarf, or accent',
+    label: 'Accessories',
     matches: (g) => g.category === 'accessories',
   },
 ];
@@ -243,10 +236,10 @@ export function StudioView({
       <section className="flex flex-col md:flex-row md:items-end justify-between gap-6 pt-2">
         <div className="max-w-2xl">
           <h1 className="text-[32px] sm:text-[42px] font-semibold tracking-[-0.03em] leading-[1.08] text-[#1D1D1F]">
-            Outfit Studio & Lookbook.
+            Outfit Studio &amp; Lookbook.
           </h1>
-          <p className="mt-3 text-[16px] leading-[1.6] text-[#6E6E73]">
-            Assemble your own combinations with instant vector harmony scoring, get optional AI refinement, and organize your favorite saved looks.
+          <p className="mt-2 text-[15px] leading-[1.6] text-[#6E6E73]">
+            Build custom outfits, get stylist critique, and manage saved looks.
           </p>
         </div>
 
@@ -297,14 +290,11 @@ export function StudioView({
               return (
                 <section key={slot.key} className="space-y-3">
                   <div className="flex items-baseline justify-between gap-2">
-                    <div>
-                      <h2 className="text-[16px] font-semibold text-[#1D1D1F]">
-                        {slot.label}
-                      </h2>
-                      <p className="text-[12px] text-[#86868B]">{slot.hint}</p>
-                    </div>
+                    <h2 className="text-[16px] font-semibold text-[#1D1D1F]">
+                      {slot.label}
+                    </h2>
                     <span className="text-[12px] text-[#6E6E73] tabular-nums shrink-0">
-                      {itemsInSlot.length} available
+                      {itemsInSlot.length}
                     </span>
                   </div>
 
@@ -376,7 +366,7 @@ export function StudioView({
                     {critique ? critique.score : liveHarmony.overallScore}
                   </p>
                   <p className="mt-1 text-[11px] text-[#6E6E73] tabular-nums">
-                    {critique ? 'AI Score' : 'Vector Score'}
+                    {critique ? 'AI Score' : 'Style Score'}
                   </p>
                 </div>
               )}
@@ -386,10 +376,7 @@ export function StudioView({
               <div className="rounded-2xl bg-[#F5F5F7] py-12 px-6 text-center">
                 <Plus className="w-5 h-5 text-[#86868B] mx-auto mb-2" aria-hidden="true" />
                 <p className="text-[14px] font-medium text-[#1D1D1F]">
-                  Tap garments on the left to build a look
-                </p>
-                <p className="mt-1 text-[12px] text-[#6E6E73]">
-                  Harmony scores update instantaneously as you pair fabrics and colors.
+                  Select garments to build a look
                 </p>
               </div>
             ) : (
@@ -440,7 +427,7 @@ export function StudioView({
                     <p className="font-mono text-[13px] font-semibold text-[#1D1D1F] tabular-nums">
                       {liveHarmony.vectorScore}%
                     </p>
-                    <p className="text-[10px] text-[#6E6E73]">Vector</p>
+                    <p className="text-[10px] text-[#6E6E73]">Cohesion</p>
                   </div>
                 </div>
                 <p className="text-[#1D1D1F] leading-[1.55]">

@@ -74,7 +74,7 @@ export function WardrobeView({
     return list;
   }, [garments, category, query, sortBy, personalScores]);
 
-  const vectorIndexedCount = garments.filter((g) => g.hasVector).length;
+  const unwornCount = garments.filter((g) => g.wearCount === 0).length;
 
   return (
     <div className="space-y-10">
@@ -82,11 +82,8 @@ export function WardrobeView({
       <section className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 pt-2">
         <div className="max-w-2xl">
           <h1 className="text-[32px] sm:text-[42px] font-semibold tracking-[-0.03em] leading-[1.08] text-[#1D1D1F]">
-            Your intelligent wardrobe archive.
+            Wardrobe.
           </h1>
-          <p className="mt-3 text-[16px] leading-[1.6] text-[#6E6E73]">
-            Every garment is inspected for fabric weave, drape, fit, and undertone, then mapped as an image vector on your server for instant combination ranking.
-          </p>
         </div>
 
         <div className="flex items-center gap-3 shrink-0">
@@ -107,15 +104,15 @@ export function WardrobeView({
         className="grid grid-cols-2 sm:grid-cols-4 gap-y-4 border-y border-black/[0.08] py-5"
       >
         <div className="sm:pr-6 sm:border-r sm:border-black/[0.08]">
-          <p className="text-[12px] font-medium text-[#6E6E73]">Cataloged Pieces</p>
+          <p className="text-[12px] font-medium text-[#6E6E73]">Pieces</p>
           <p className="mt-1 font-display text-[28px] font-semibold tracking-[-0.02em] text-[#1D1D1F] tabular-nums">
             {garments.length}
           </p>
         </div>
         <div className="sm:px-6 sm:border-r sm:border-black/[0.08]">
-          <p className="text-[12px] font-medium text-[#6E6E73]">Vector Mapped</p>
+          <p className="text-[12px] font-medium text-[#6E6E73]">Unworn</p>
           <p className="mt-1 font-display text-[28px] font-semibold tracking-[-0.02em] text-[#1D1D1F] tabular-nums">
-            {vectorIndexedCount}
+            {unwornCount}
           </p>
         </div>
         <div className="sm:px-6 sm:border-r sm:border-black/[0.08]">
@@ -216,7 +213,7 @@ export function WardrobeView({
           </h2>
           <p className="mt-2 text-[14px] text-[#6E6E73]">
             {garments.length === 0
-              ? 'Upload up to 50 clothing items at once. Our AI analyzes each fabric, fit, and color vector automatically.'
+              ? 'Upload up to 50 clothing photos at once to build your closet.'
               : 'Try clearing your search or switching back to All Pieces.'}
           </p>
           <div className="mt-6 flex items-center justify-center gap-3">

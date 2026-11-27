@@ -17,8 +17,14 @@ import {
   classifyTopLayerRole,
   computeDeterministicVector,
   computeWardrobeIntelligenceSummary,
+  evaluateOutfitLocalHarmony,
   normalizeVector,
 } from '../src/utils/styleEngine.ts';
+import {
+  buildAdvisorWardrobeContext,
+  ensureGarmentHyperlinks,
+  formatCompactHistoryForAdvisor,
+} from '../src/utils/advisorRetrieval.ts';
 
 export interface ModelTier {
   id: string;
@@ -37,25 +43,25 @@ export const DEEP_REASONING_HIERARCHY: ModelTier[] = [
   {
     id: 'gemini-4-hydrogen (balanced)',
     model: 'gemini-4-hydrogen',
-    thinkingLevel: ThinkingLevel.MEDIUM,
+    thinkingLevel: ThinkingLevel.HIGH,
     supportsSearch: true,
   },
   {
     id: 'gemini-4-hydrogen (fast)',
     model: 'gemini-4-hydrogen',
-    thinkingLevel: ThinkingLevel.LOW,
+    thinkingLevel: ThinkingLevel.MEDIUM,
     supportsSearch: true,
   },
   {
     id: 'gemini-3.1-flash-lite (reasoned)',
     model: 'gemini-3.1-flash-lite',
-    thinkingLevel: ThinkingLevel.LOW,
+    thinkingLevel: ThinkingLevel.HIGH,
     supportsSearch: false,
   },
   {
     id: 'gemini-3.1-flash-lite (minimal)',
     model: 'gemini-3.1-flash-lite',
-    thinkingLevel: ThinkingLevel.MINIMAL,
+    thinkingLevel: ThinkingLevel.MEDIUM,
     supportsSearch: false,
   },
 ];
@@ -64,19 +70,19 @@ export const FAST_HIERARCHY: ModelTier[] = [
   {
     id: 'gemini-3.1-flash-lite (minimal)',
     model: 'gemini-3.1-flash-lite',
-    thinkingLevel: ThinkingLevel.MINIMAL,
+    thinkingLevel: ThinkingLevel.MEDIUM,
     supportsSearch: false,
   },
   {
     id: 'gemini-3.1-flash-lite (reasoned)',
     model: 'gemini-3.1-flash-lite',
-    thinkingLevel: ThinkingLevel.LOW,
+    thinkingLevel: ThinkingLevel.HIGH,
     supportsSearch: false,
   },
   {
     id: 'gemini-4-hydrogen (fast)',
     model: 'gemini-4-hydrogen',
-    thinkingLevel: ThinkingLevel.LOW,
+    thinkingLevel: ThinkingLevel.MEDIUM,
     supportsSearch: true,
   },
 ];
@@ -421,15 +427,17 @@ export function compactGarmentLine(g: Garment): string {
 }
 
 export function compactProfileSummary(profile: UserProfile): string {
+  const fits = Array.isArray(profile.preferredFits) ? profile.preferredFits : [];
+  const aesthetics = Array.isArray(profile.styleAesthetics) ? profile.styleAesthetics : [];
   const lines = [
     `Name:${profile.name || 'User'}`,
     `Height:${profile.height || 'unspecified'}`,
     `Body:${profile.bodyType || 'unspecified'}`,
-    `Undertone:${profile.skinUndertone}`,
-    `Fits:${profile.preferredFits.join(',') || 'balanced'}`,
-    `Style:${profile.styleAesthetics.join(',') || 'modern'}`,
-    `Budget:${profile.budgetRange}`,
-    `Climate:${profile.climate}`,
+    `Undertone:${profile.skinUndertone || 'Neutral'}`,
+    `Fits:${fits.join(',') || 'balanced'}`,
+    `Style:${aesthetics.join(',') || 'modern'}`,
+    `Budget:${profile.budgetRange || 'Mid-Range'}`,
+    `Climate:${profile.climate || 'Four-Season'}`,
     profile.bio ? `Bio:${profile.bio.slice(0, 220)}` : '',
     profile.stylingGoals ? `Goals:${profile.stylingGoals.slice(0, 140)}` : '',
   ].filter(Boolean);
@@ -438,6 +446,11 @@ export function compactProfileSummary(profile: UserProfile): string {
     if (profile.blueprint.visualProfile) {
       lines.push(`PortraitVisualProfile:${profile.blueprint.visualProfile.slice(0, 320)}`);
     }
+    const bestColors = Array.isArray(profile.blueprint.bestColors) ? profile.blueprint.bestColors : [];
+    const avoidColors = Array.isArray(profile.blueprint.avoidColors) ? profile.blueprint.avoidColors : [];
+    const idealSilhouettes = Array.isArray(profile.blueprint.idealSilhouettes) ? profile.blueprint.idealSilhouettes : [];
+    const proportionTips = Array.isArray(profile.blueprint.proportionTips) ? profile.blueprint.proportionTips : [];
+    const recommendedFabrics = Array.isArray(profile.blueprint.recommendedFabrics) ? profile.blueprint.recommendedFabrics : [];
     const bestHexes = profile.blueprint.bestColorHexes?.length
       ? `(${profile.blueprint.bestColorHexes.slice(0, 6).join(',')})`
       : '';
@@ -445,7 +458,7 @@ export function compactProfileSummary(profile: UserProfile): string {
       ? `(${profile.blueprint.avoidColorHexes.slice(0, 4).join(',')})`
       : '';
     lines.push(
-      `Blueprint:${profile.blueprint.colorSeason}(${profile.blueprint.contrastLevel} contrast); best:${profile.blueprint.bestColors.slice(0, 6).join(',')}${bestHexes}; avoid:${profile.blueprint.avoidColors.slice(0, 4).join(',')}${avoidHexes}; silhouettes:${profile.blueprint.idealSilhouettes.slice(0, 3).join(',')}; proportions:${profile.blueprint.proportionTips.slice(0, 2).join('; ')}; fabrics:${profile.blueprint.recommendedFabrics.slice(0, 4).join(',')}`
+      `Blueprint:${profile.blueprint.colorSeason || 'Balanced'}(${profile.blueprint.contrastLevel || 'Medium'} contrast); best:${bestColors.slice(0, 6).join(',')}${bestHexes}; avoid:${avoidColors.slice(0, 4).join(',')}${avoidHexes}; silhouettes:${idealSilhouettes.slice(0, 3).join(',')}; proportions:${proportionTips.slice(0, 2).join('; ')}; fabrics:${recommendedFabrics.slice(0, 4).join(',')}`
     );
   }
   return lines.join(' | ');
@@ -760,10 +773,12 @@ PRE-SCREENED MMR CANDIDATE OUTFITS (OKLCH color, multi-layer & proportion physic
 ${candidateLines.join('\n')}
 
 TASK:
-Act as an elite editorial personal stylist cross-encoder. Critically compare all ${candidates.length} candidates for THIS specific person's real coloring, portrait features, 12-season palette (especially [BASE]/[MID-LAYER]/[OUTER] near the face), natural contrast level, body proportions, multi-layer dressing physics, and ${effectiveSeason} ${occasion} suitability${cleanBrief ? ' + exact user request' : ''}.
+Act as a senior luxury menswear/womenswear creative director and master 12-season color analyst. Critically compare all ${candidates.length} candidates for THIS specific person's real coloring, portrait features, 12-season palette (especially [BASE]/[MID-LAYER]/[OUTER] near the face), natural contrast level, body proportions, multi-layer dressing physics, and ${effectiveSeason} ${occasion} suitability${cleanBrief ? ' + exact user request' : ''}.
 - Select and rank the BEST ${targetCount} distinct outfits from rank 1 (strongest) to rank ${targetCount}${candidates.length > targetCount ? ` (drop the ${candidates.length - targetCount} weakest or most redundant candidates)` : ''}.
-- Differentiate scores honestly (e.g. 95, 91, 87, 84, 80 — do NOT give every outfit the same inflated score).
-- Make every explanation concrete, grounded in their portrait & actual garments: explain how the layers work together (e.g. shirt collar peeking under sweater, sleeve cuff, tucked base, open jacket) and why those colors flatter THIS person specifically.
+- FULL-CLOSET VARIETY RULE: Maximize wardrobe breadth across your 5 picks. Avoid reusing the same non-anchored top, bottom, jacket, or shoe more than twice across Ranks #1–#${targetCount}. Each look must have a distinct silhouette, color mood, or layering architecture.
+- Differentiate scores honestly (e.g. 95, 91, 87, 83, 79 — never give every look the same inflated score).
+- ZERO AMATEUR CLICHÉS: NEVER use lazy filler like "elevates your look", "effortless chic", "versatile staple", "ties the outfit together", "adds a pop of color", or "perfect for any occasion".
+- WRITE LIKE A REAL FASHION DIRECTOR: Give concrete garment-specific mechanics — name exact textures/weaves (e.g. "matte brushed flannel against crisp cotton poplin"), exact collar/cuff/hem styling (e.g. "leave the oxford top button open so the collar tips sit inside the crewneck", "half-tuck the boxy hem to raise the visual waist"), and exact complexion physics (why the face-framing shade sharpens THIS person's undertone and contrast).
 Return a valid JSON array of exactly ${targetCount} objects sorted by rank ascending.`;
 
   const contentsPayload = portraitImage
@@ -782,7 +797,7 @@ Return a valid JSON array of exactly ${targetCount} objects sorted by rank ascen
       contents: contentsPayload,
       config: {
         systemInstruction:
-          'You are a world-class personal fashion director and 12-season color analyst. Judge outfits rigorously on real-world layering (shirts/tees under sweaters & cardigans), thermal season realism (never sweaters in summer), complexion flattery near the face, OKLCH tonal/60-30-10 harmony, and silhouette balance. Be specific, editorial, and concise.',
+          'You are a world-class editorial fashion director and 12-season colorist. Judge outfits with surgical precision on real-world layering (base shirts/tees under sweaters & cardigans), thermal season realism (never sweaters in summer), face-framing complexion harmony, OKLCH tonal/60-30-10 balance, and proportion geometry. Never write generic AI fashion clichés; every sentence must name concrete fabrics, cuts, colors, and styling mechanics.',
         ...buildThinkingConfig(tier),
         responseMimeType: 'application/json',
         responseSchema: {
@@ -791,12 +806,12 @@ Return a valid JSON array of exactly ${targetCount} objects sorted by rank ascen
             type: Type.OBJECT,
             properties: {
               candidateIndex: { type: Type.INTEGER, description: '1-based index matching C1..CN' },
-              title: { type: Type.STRING, description: 'Editorial 3-5 word look name' },
+              title: { type: Type.STRING, description: 'Specific editorial 3-5 word look name (no clichés)' },
               score: { type: Type.INTEGER, description: 'Calibrated stylist score 65-98' },
-              rationale: { type: Type.STRING, description: 'Why these pieces look great on this person (<=28 words)' },
-              fabricFitNotes: { type: Type.STRING, description: 'Fabric texture, weight layering & volume interplay (<=24 words)' },
-              bodyTailoringNote: { type: Type.STRING, description: 'How colors near the face & proportions flatter their profile (<=24 words)' },
-              finishingTouch: { type: Type.STRING, description: 'One concrete styling move e.g. French tuck, rolled cuff, unbuttoned drape (<=18 words)' },
+              rationale: { type: Type.STRING, description: 'Specific sartorial reason these exact pieces work on this person (<=34 words)' },
+              fabricFitNotes: { type: Type.STRING, description: 'Concrete fabric contrast, weight stepping & silhouette balance (<=28 words)' },
+              bodyTailoringNote: { type: Type.STRING, description: 'Exact face-framing color effect & body proportion geometry for their profile (<=28 words)' },
+              finishingTouch: { type: Type.STRING, description: 'One actionable physical styling move: tuck, collar break, cuff roll, sleeve push, or belt/hem adjustment (<=22 words)' },
             },
             required: [
               'candidateIndex',
@@ -1057,7 +1072,8 @@ export async function critiqueCustomOutfitWithAI(
   items: Garment[],
   profile: UserProfile,
   occasion: OccasionType,
-  portraitImage?: { base64: string; mimeType: string } | null
+  portraitImage?: { base64: string; mimeType: string } | null,
+  allGarments: Garment[] = []
 ): Promise<{
   score: number;
   rationale: string;
@@ -1067,9 +1083,33 @@ export async function critiqueCustomOutfitWithAI(
   modelUsed: string;
 }> {
   const ai = getGenAIClient();
-  const tiers = await resolveFullHierarchy(FAST_HIERARCHY, ai);
+  const tiers = await resolveFullHierarchy(DEEP_REASONING_HIERARCHY, ai);
+
+  const vectors: Record<string, number[]> = {};
+  for (const g of items) {
+    vectors[g.id] = computeDeterministicVector(g);
+  }
+  const localMetrics = evaluateOutfitLocalHarmony(items, vectors, profile, { occasion });
+
+  const hasMidLayer = items.some((g) => g.category === 'tops' && classifyTopLayerRole(g) === 'mid');
+  const hasBaseLayer = items.some((g) => g.category === 'tops' && classifyTopLayerRole(g) === 'base');
+  const layeringDiagnostics: string[] = [];
+  if (hasMidLayer && !hasBaseLayer) {
+    layeringDiagnostics.push(
+      'WARNING: A mid-layer sweater/cardigan/hoodie is worn with NO base shirt or tee underneath — call this out honestly and specify the best underlayer.'
+    );
+  }
+  const selectedIds = new Set(items.map((g) => g.id));
+  const swapPool = allGarments
+    .filter((g) => !selectedIds.has(g.id))
+    .slice(0, 18)
+    .map((g) => compactGarmentLine(g))
+    .join('\n');
+
   const prompt = `Profile: ${compactProfileSummary(profile)}
 Occasion: ${occasion}
+Objective Harmony Diagnostics: Overall=${localMetrics.overallScore}/100 | PersonalFlattery=${localMetrics.personalScore}% | OKLCHColor=${localMetrics.colorScore}% (${localMetrics.paletteSummary}) | ProportionLayering=${localMetrics.proportionScore}%
+${layeringDiagnostics.length > 0 ? `${layeringDiagnostics.join('\n')}\n` : ''}
 Custom outfit selected by user:
 ${items
   .map(
@@ -1082,8 +1122,11 @@ ${items
           : g.category.toUpperCase()
       }] ${compactGarmentLine(g)}`
   )
-  .join('\n')}
-Evaluate this custom combination with honest, constructive precision for THIS specific person's coloring, proportions, and real-world layering (e.g., if a sweater/cardigan is worn with no base shirt underneath, call it out and suggest the ideal underlayer).`;
+  .join('\n')}${swapPool ? `\n\nOTHER PIECES IN USER'S CLOSET (suggest a concrete swap or underlayer from here if it improves the look):\n${swapPool}` : ''}
+
+Evaluate this custom combination with brutally honest, expert fashion-director precision for THIS specific person's coloring, proportions, fabric interplay, and occasion fit.
+- Do NOT flatter a weak outfit: if colors clash, formality gaps are wide, fabrics fight, or a sweater lacks an underlayer, drop the score honestly (50-75) and state the exact fix.
+- Zero generic clichés ("elevate", "effortless", "ties it together"). Be concrete and actionable.`;
 
   const contents =
     portraitImage && portraitImage.base64 && portraitImage.mimeType
@@ -1101,17 +1144,17 @@ Evaluate this custom combination with honest, constructive precision for THIS sp
       contents,
       config: {
         systemInstruction:
-          'You are an expert personal stylist reviewing a client-built outfit. Use their portrait/visual blueprint to judge color harmony near their face, silhouette balance, and practical layering. Be concise, accurate, and actionable.',
+          'You are a candid, world-class personal fashion director reviewing a client-built outfit. Use their portrait/visual blueprint and objective color/proportion diagnostics to deliver sharp, honest, actionable critique—never sycophantic fluff.',
         ...buildThinkingConfig(tier),
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            score: { type: Type.INTEGER },
-            rationale: { type: Type.STRING },
-            fabricFitNotes: { type: Type.STRING },
-            bodyTailoringNote: { type: Type.STRING },
-            finishingTouch: { type: Type.STRING },
+            score: { type: Type.INTEGER, description: 'Honest calibrated score 40-98' },
+            rationale: { type: Type.STRING, description: 'Direct verdict on what works and what breaks in this exact pairing (<=40 words)' },
+            fabricFitNotes: { type: Type.STRING, description: 'Specific fabric weight, texture contrast & silhouette critique (<=32 words)' },
+            bodyTailoringNote: { type: Type.STRING, description: 'Face-framing color impact & body proportion read for their profile (<=32 words)' },
+            finishingTouch: { type: Type.STRING, description: 'Most impactful styling adjustment OR exact garment swap/addition from their closet (<=28 words)' },
           },
           required: ['score', 'rationale', 'fabricFitNotes', 'bodyTailoringNote', 'finishingTouch'],
         },
@@ -1128,7 +1171,7 @@ Evaluate this custom combination with honest, constructive precision for THIS sp
 
     return {
       ...parsed,
-      score: Math.max(40, Math.min(99, Math.round(Number(parsed.score) || 82))),
+      score: Math.max(40, Math.min(99, Math.round(Number(parsed.score) || localMetrics.overallScore))),
     };
   });
 
@@ -1142,10 +1185,10 @@ export interface AdvisorImageInput {
 }
 
 /**
- * Engine-Backed Editorial Shopping & Trend Advisor:
- * Injects real-time Wardrobe DNA telemetry (OKLCH color/undertone balance, formality mix,
- * unworn pieces, blueprint alignment, high-ROI gaps) + full compact wardrobe + multimodal
- * store-item photo comparison (up to 4 photos) + Google Search grounding.
+ * Engine-Backed Editorial Stylist & Shopping Advisor:
+ * Combines anti-repetition full-closet retrieval, pre-computed OKLCH + multi-layer verified outfit blueprints,
+ * live Wardrobe DNA telemetry, multimodal store-item comparison (up to 4 photos), intent-gated Google Search,
+ * and deterministic garment hyperlink verification.
  */
 export async function chatWithShoppingAdvisor(
   userMessage: string,
@@ -1164,62 +1207,78 @@ export async function chatWithShoppingAdvisor(
   const ai = getGenAIClient();
   const tiers = await resolveFullHierarchy(DEEP_REASONING_HIERARCHY, ai);
 
-  const wardrobeDna = computeWardrobeIntelligenceSummary(garments, savedOutfits, profile);
+  const hasImages = attachedImages.length > 0;
+  const hasPortrait = Boolean(portraitImage?.base64 && portraitImage?.mimeType);
 
-  const compactWardrobe =
-    garments.length > 0
-      ? garments.map((g) => compactGarmentLine(g)).join('\n')
-      : 'Wardrobe is currently empty.';
+  const wardrobeDna = computeWardrobeIntelligenceSummary(garments, savedOutfits, profile);
+  const advisorCtx = buildAdvisorWardrobeContext(
+    garments,
+    history,
+    userMessage,
+    profile,
+    hasImages
+  );
 
   const compactSaved =
     savedOutfits.length > 0
       ? savedOutfits
           .slice(0, 6)
-          .map((o) => `${o.title} (${o.occasion}, score ${o.score}): [${o.itemIds.join(',')}]`)
+          .map((o) => `${o.title} (${o.occasion}, score ${o.score})`)
           .join('; ')
       : 'None saved yet.';
 
-  const recentTurns = history
-    .slice(-6)
-    .map((m) => `${m.role === 'user' ? 'User' : 'Advisor'}: ${m.content.slice(0, 420)}`)
-    .join('\n');
+  const recentTurns = formatCompactHistoryForAdvisor(history);
 
-  const hasImages = attachedImages.length > 0;
-  const hasPortrait = Boolean(portraitImage?.base64 && portraitImage?.mimeType);
   const imageRules = hasImages
     ? `\nPHOTO BUY/COMPARE PROTOCOL (${attachedImages.length} item${attachedImages.length > 1 ? 's' : ''} uploaded: Option 1${attachedImages.length > 1 ? `..Option ${attachedImages.length}` : ''}):
-- Visually inspect each uploaded item's color temperature, saturation, fabric drape/weight, silhouette volume, and formality — AND compare directly against the user's portrait & 12-season coloring.
+- Visually inspect each uploaded item's exact color temperature, saturation, fabric drape/weight, construction quality, silhouette volume, and formality — and evaluate directly against the user's portrait & 12-season coloring.
 - Structure your response cleanly in Markdown:
-  1. **### Verdict** — Clear **BUY**, **SKIP**, or **#1 Winner: Option X** plus a calibrated **X/10 Wardrobe Fit** score.
-  2. **Why It Works (or Doesn't) on You** — Evaluate against their exact 12-season color palette, skin undertone, natural contrast level, and body proportions.
-  3. **Outfits You Can Build Immediately** — Give 2–3 specific, wear-ready layered outfits pairing the recommended buy with their actual owned pieces using [[item:GARMENT_ID|Exact Garment Name]] links.
-  4. **Duplicate & ROI Check** — Flag if they already own something redundant (link the owned item!) or confirm which wardrobe gap it solves.`
+  1. **### Verdict** — Decisive **BUY**, **SKIP**, or **#1 Winner: Option X** with an honest **X/10 Wardrobe Fit** score (do not hesitate to say SKIP if it clashes, duplicates, or has poor proportions).
+  2. **Why It Works (or Fails) on You** — Concrete color temperature, contrast, and silhouette geometry for THIS person.
+  3. **Outfits You Can Build Immediately** — 2–3 real, properly layered outfits pairing the recommended buy with FRESH owned pieces from FRESH CLOSET SPOTLIGHT using [[item:GARMENT_ID|Exact Garment Name]] links.
+  4. **Duplicate & ROI Check** — Call out overlap with existing owned pieces (link them!) or confirm the exact wardrobe gap it closes.`
     : '';
 
-  const systemInstruction = `You are the Private Editorial Stylist & Shopping Advisor inside "What do I Wear?".
-You combine 12-season color theory, proportion geometry, realistic multi-layer dressing (shirts/tees under sweaters & cardigans, breathable pieces in summer), live fashion trends, and strict cost-per-wear / outfit-multiplier discipline.
+  const seasonRule =
+    advisorCtx.effectiveSeason === 'Summer'
+      ? '- STRICT SUMMER RULE: User is asking for Summer / hot weather. NEVER suggest sweaters, wool/merino/cashmere knits, hoodies, fleeces, corduroy, or winter coats. Only breathable shirts, tees, polos, linen, lightweight trousers/shorts, and light footwear.'
+      : '- REAL-WORLD LAYERING RULE: Whenever you recommend a sweater, cardigan, pullover, vest, hoodie, or jacket, ALWAYS pair a concrete BASE underlayer (shirt, oxford, tee, or polo) underneath it and explain how the collar, cuffs, or hem interact.';
 
-USER PROFILE & STORED PORTRAIT ANALYSIS${hasPortrait ? ' (User portrait photo attached for direct visual reference)' : ''}:
+  const systemInstruction = `You are a sharp, opinionated, world-class Private Fashion Director & Shopping Advisor inside "What do I Wear?".
+You have the taste of a senior editorial stylist from Milan/Paris/Tokyo combined with 12-season color analysis, proportion geometry, multi-layer dressing mastery, and ruthless wardrobe ROI discipline.
+
+USER PROFILE & STORED PORTRAIT ANALYSIS${hasPortrait ? ' (User portrait photo attached — inspect their real skin undertone, hair/eye contrast, and frame directly)' : ''}:
 ${compactProfileSummary(profile)}
 
-WARDROBE DNA TELEMETRY (computed live):
+WARDROBE INTELLIGENCE SUMMARY (${garments.length} total pieces | ${advisorCtx.unexploredCount} pieces NOT YET discussed in this thread):
 ${wardrobeDna.compactDossier}
 
-USER WARDROBE (${garments.length} items — format: ID|Name|Category/Sub|Color(Hex,Undertone)|Fabric|Fit|Pattern|Formality|Seasons):
-${compactWardrobe}
+FRESH CLOSET SPOTLIGHT FOR THIS REQUEST (Top fresh, unexplored, ${advisorCtx.effectiveSeason}-appropriate matches — PRIORITIZE THESE FIRST):
+${advisorCtx.spotlightSection}
+
+PRE-VERIFIED MULTI-LAYER FRESH OUTFIT BLUEPRINTS (Already scored for OKLCH color harmony, proportion physics, 12-season flattery, thermal realism & anti-repetition — draw from or remix these when recommending outfits):
+${advisorCtx.verifiedBlueprintsSection}
+
+RECENTLY DISCUSSED ITEMS — COOLDOWN LIST (DO NOT REPEAT THESE unless the user explicitly asked about them in this message):
+${advisorCtx.cooldownSection}
+
+COMPLETE CATEGORIZED WARDROBE (${garments.length} items — ordered freshest & most query-relevant FIRST inside each category; items tagged |RECENTLY_USED are at the end):
+${advisorCtx.categorizedCatalog}
 
 SAVED LOOKS:
 ${compactSaved}
 
-Guidelines:
-- Give decisive, honest, taste-driven advice grounded strictly in what looks BEST on THIS specific person (referencing their portrait coloring, contrast, and build) and what they ALREADY own.
-- REAL-WORLD DRESSING COMMON SENSE: Always include proper base underlayers (shirt/tee/polo) beneath sweaters, cardigans, vests, and jackets when suggesting layered outfits, and NEVER suggest sweaters, wool knits, or heavy coats for Summer / hot weather!
-- ALWAYS hyperlink any clothing piece you mention from USER WARDROBE using the exact syntax [[item:GARMENT_ID|Exact Garment Name]] (for example: [[item:garment_abc123|Ivory Merino Crewneck]]). Only use real GARMENT_IDs listed above—never invent IDs for items they do not own.
-- Use clean Markdown formatting (**bold** for verdicts and key takeaways, ### headings when structuring sections, *italics* for styling nuances, and "-" bullet points).
-- Whenever recommending a purchase, specify exact color/undertone, fabric/weight, silhouette cut, and how many new outfits it unlocks with their current closet.${imageRules}
-- Keep responses sharp, editorial, and effortless to scan (under ${hasImages ? '340' : '270'} words unless the user asks for an in-depth audit).`;
+NON-NEGOTIABLE STYLING & INTELLIGENCE RULES:
+1. **ZERO REPETITION / FULL-CLOSET MASTERY**: The user owns ${garments.length} distinct garments. Actively mine FRESH CLOSET SPOTLIGHT, PRE-VERIFIED BLUEPRINTS, and unexplored items across ALL categories. NEVER recycle items on the COOLDOWN LIST or marked |RECENTLY_USED unless the user explicitly named them in their message.
+2. **NO 5-YEAR-OLD AI CLICHÉS**: Strictly FORBIDDEN phrases: "elevates your look", "effortless chic", "versatile staple", "ties everything together", "adds a pop of color", "perfect for any occasion", "balances the silhouette" (without explaining the exact cut/hem physics), or robotic filler intros ("Great question!", "I'd love to help!"). Jump straight into decisive, insightful styling advice.
+3. **SARTORIAL PRECISION**: Talk like a real luxury stylist. Name exact fabrics, weights, color undertones, and physical styling moves (e.g., "unbutton the collar so the crisp poplin frames your jaw", "half-tuck to lengthen the leg line", "matte suede softens the crisp wool crease"). Give honest pushback when an idea or purchase doesn't suit them.
+4. ${seasonRule}
+5. **MANDATORY CLICKABLE HYPERLINKS**: Whenever you mention ANY piece from the user's wardrobe, ALWAYS format it as [[item:GARMENT_ID|Exact Garment Name]] using ONLY real GARMENT_IDs from the catalog above (never invent IDs for items they don't own).
+6. **CLEAN MARKDOWN**: Use **bold** verdicts, ### section headers, and crisp bullet lists.
+7. **SHOPPING RIGOR**: When recommending what to buy, specify exact shade/undertone, fabric/weight, cut/rise, price tier aligned to their ${profile.budgetRange} budget, and name specific owned pieces it unlocks.${imageRules}
+8. Stay tight, high-signal, and scannable (under ${hasImages ? '360' : '310'} words unless they ask for a deep full-closet audit).`;
 
-  const textPrompt = `${recentTurns ? `Recent conversation:\n${recentTurns}\n\n` : ''}User: ${userMessage}`;
+  const textPrompt = `${recentTurns ? `Recent conversation context:\n${recentTurns}\n\n` : ''}Current user request: ${userMessage}`;
 
   const multimodalParts: Array<
     { text: string } | { inlineData: { mimeType: string; data: string } }
@@ -1254,6 +1313,8 @@ Guidelines:
     multimodalParts.push({ text: textPrompt });
   }
 
+  const useWebSearch = advisorCtx.intent.needsWebSearch;
+
   const res = await executeWithModelHierarchy(tiers, async (tier) => {
     const response = await ai.models.generateContent({
       model: tier.model,
@@ -1261,12 +1322,12 @@ Guidelines:
       config: {
         systemInstruction,
         ...buildThinkingConfig(tier),
-        ...(tier.supportsSearch ? { tools: [{ googleSearch: {} }] } : {}),
+        ...(tier.supportsSearch && useWebSearch ? { tools: [{ googleSearch: {} }] } : {}),
       },
     });
 
-    const content = (response.text ?? '').trim();
-    if (!content) throw new Error('Empty advisor reply');
+    const rawContent = (response.text ?? '').trim();
+    if (!rawContent) throw new Error('Empty advisor reply');
 
     // Extract Google Search grounding sources if present
     const rawChunks =
@@ -1291,33 +1352,8 @@ Guidelines:
       }
     }
 
-    // Detect which owned wardrobe items the advisor referenced (explicit [[item:ID|Name]] tags first, then exact/name fallback)
-    const validGarmentIds = new Set(garments.map((g) => g.id));
-    const referencedSet = new Set<string>();
-    const tagRegex = /\[\[(?:item|garment):([a-zA-Z0-9_-]+)(?:\|[^\]]+)?\]\]/g;
-    let tagMatch: RegExpExecArray | null;
-    while ((tagMatch = tagRegex.exec(content)) !== null) {
-      if (validGarmentIds.has(tagMatch[1])) {
-        referencedSet.add(tagMatch[1]);
-      }
-    }
-
-    const lower = content.toLowerCase();
-    for (const g of garments) {
-      if (referencedSet.size >= 6) break;
-      if (referencedSet.has(g.id)) continue;
-      const words = g.name
-        .toLowerCase()
-        .split(/\s+/)
-        .filter((w) => w.length >= 4);
-      if (
-        lower.includes(g.name.toLowerCase()) ||
-        (words.length >= 2 && words.filter((w) => lower.includes(w)).length >= 2)
-      ) {
-        referencedSet.add(g.id);
-      }
-    }
-    const referencedItemIds = Array.from(referencedSet).slice(0, 6);
+    // Validate & auto-repair all [[item:ID|Name]] hyperlinks so every mentioned garment is clickable
+    const { content, referencedItemIds } = ensureGarmentHyperlinks(rawContent, garments);
 
     return { content, referencedItemIds, sources: sources.slice(0, 4) };
   });

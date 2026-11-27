@@ -499,7 +499,7 @@ test('computeWardrobeIntelligenceSummary produces accurate category counts, unwo
   assert.equal(summary.unwornSample[0].id, 'g_new');
   assert.ok(summary.dominantSwatches.length >= 4);
   assert.ok(summary.blueprintAlignmentAvg >= 60);
-  assert.ok(summary.compactDossier.includes('g_new|Rust Silk Camp Shirt'));
+  assert.ok(summary.compactDossier.includes('Unworn Pieces: 1/5'));
 });
 
 test('real multi-layer outfit assembly pairs a Base shirt/tee UNDER sweaters and never emits bare sweaters when base shirts exist', () => {
@@ -728,6 +728,134 @@ test('portrait bestColorHexes, avoidColorHexes, and expanded styleAesthetics dri
     `Expected OKLCH hex match (${matchScore}) >= clash (${clashScore}) + 22`
   );
 });
+
+test('44-item closet enforces global exposure caps and rotates fresh pieces across consecutive ranking batches', () => {
+  const palette = [
+    { name: 'Ivory', hex: '#F3EFE6', undertone: 'Warm' as const },
+    { name: 'Navy', hex: '#1E2D45', undertone: 'Cool' as const },
+    { name: 'Olive', hex: '#556044', undertone: 'Warm' as const },
+    { name: 'Charcoal', hex: '#3A3D40', undertone: 'Neutral' as const },
+    { name: 'Camel', hex: '#C29B6C', undertone: 'Warm' as const },
+    { name: 'Espresso', hex: '#3B2820', undertone: 'Warm' as const },
+    { name: 'Slate', hex: '#5A6978', undertone: 'Cool' as const },
+    { name: 'Sand', hex: '#D6C8B4', undertone: 'Warm' as const },
+  ];
+
+  const closet: Garment[] = [];
+  const makeItem = (
+    id: string,
+    name: string,
+    category: Garment['category'],
+    subCategory: string,
+    layeringRole: Garment['layeringRole'],
+    idx: number,
+    fabric: string,
+    weight: Garment['fabricWeight']
+  ): Garment => {
+    const c = palette[idx % palette.length];
+    return {
+      id,
+      name: `${c.name} ${name} ${idx + 1}`,
+      category,
+      subCategory,
+      imageUrl: `/test/${id}.jpg`,
+      primaryColor: c.name,
+      colorHex: c.hex,
+      secondaryColors: [],
+      undertone: c.undertone,
+      fabric,
+      fabricWeight: weight,
+      texture: 'Clean weave',
+      fit: idx % 2 === 0 ? 'Tailored' : 'Relaxed',
+      silhouette: 'Clean modern cut',
+      pattern: 'Solid',
+      formality: 5 + (idx % 3),
+      seasons: ['Spring', 'Autumn', 'Winter', 'All-Season'],
+      occasions: ['Smart Casual', 'Everyday', 'Evening'],
+      stylingNotes: 'Versatile staple.',
+      layeringRole,
+      wearCount: idx % 4,
+      hasVector: true,
+      vectorSource: 'semantic-fallback',
+      createdAt: `2026-11-${String((idx % 25) + 1).padStart(2, '0')}T00:00:00Z`,
+    };
+  };
+
+  for (let i = 0; i < 14; i++) {
+    closet.push(makeItem(`base_${i}`, 'Oxford Shirt', 'tops', 'Oxford Shirt', 'Base', i, 'Cotton oxford', 'Lightweight'));
+  }
+  for (let i = 0; i < 6; i++) {
+    closet.push(makeItem(`mid_${i}`, 'Merino Sweater', 'tops', 'Sweater', 'Mid', i + 2, 'Merino wool knit', 'Midweight'));
+  }
+  for (let i = 0; i < 10; i++) {
+    closet.push(makeItem(`bot_${i}`, 'Tailored Trousers', 'bottoms', 'Trousers', 'Bottom', i + 1, 'Wool twill', 'Midweight'));
+  }
+  for (let i = 0; i < 6; i++) {
+    closet.push(makeItem(`out_${i}`, 'Structured Jacket', 'outerwear', 'Jacket', 'Outer', i + 3, 'Brushed wool', 'Heavyweight'));
+  }
+  for (let i = 0; i < 6; i++) {
+    closet.push(makeItem(`shoe_${i}`, 'Leather Loafers', 'footwear', 'Loafers', 'Footwear', i + 4, 'Calfskin leather', 'Midweight'));
+  }
+  for (let i = 0; i < 2; i++) {
+    closet.push(makeItem(`acc_${i}`, 'Leather Belt', 'accessories', 'Belt', 'Accent', i, 'Full-grain leather', 'Lightweight'));
+  }
+
+  assert.equal(closet.length, 44);
+  const vectors: Record<string, number[]> = {};
+  for (const g of closet) vectors[g.id] = computeDeterministicVector(g);
+
+  const batch1 = generateCandidateCombinations(closet, vectors, {
+    occasion: 'Smart Casual',
+    season: 'Autumn',
+    profile: sampleProfile,
+    rotationSeed: 101,
+    maxCandidates: 10,
+  });
+
+  assert.equal(batch1.length, 10);
+  const batch1UniqueItems = new Set(batch1.flatMap((c) => c.itemIds));
+  assert.ok(
+    batch1UniqueItems.size >= 14,
+    `Expected batch 1 (10 finalists) to span >= 14 distinct garments, got ${batch1UniqueItems.size}`
+  );
+
+  // Convert top 5 of batch1 into previousCombinations and re-run with a new rotationSeed
+  const prevOutfits: OutfitCombination[] = batch1.slice(0, 5).map((c, idx) => ({
+    id: `prev-${idx}`,
+    title: `Prev ${idx}`,
+    source: 'ai',
+    score: c.localScore,
+    vectorHarmonyScore: c.vectorScore,
+    itemIds: c.itemIds,
+    occasion: 'Smart Casual',
+    season: 'Autumn',
+    rationale: '',
+    fabricFitNotes: '',
+    bodyTailoringNote: '',
+    finishingTouch: '',
+    wearCount: 0,
+    saved: false,
+    createdAt: '2026-11-26T00:00:00Z',
+  }));
+
+  const batch2 = generateCandidateCombinations(closet, vectors, {
+    occasion: 'Smart Casual',
+    season: 'Autumn',
+    profile: sampleProfile,
+    previousCombinations: prevOutfits,
+    rotationSeed: 202,
+    maxCandidates: 10,
+  });
+
+  const batch1Top5Set = new Set(prevOutfits.flatMap((o) => o.itemIds));
+  const batch2Top5Set = new Set(batch2.slice(0, 5).flatMap((c) => c.itemIds));
+  const newlyIntroduced = [...batch2Top5Set].filter((id) => !batch1Top5Set.has(id));
+  assert.ok(
+    newlyIntroduced.length >= 4,
+    `Expected consecutive batch to introduce >= 4 fresh garments, got ${newlyIntroduced.length}`
+  );
+});
+
 
 
 

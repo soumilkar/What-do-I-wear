@@ -284,10 +284,10 @@ export function BatchUploadModal({
         <div className="px-6 py-5 border-b border-black/[0.06] flex items-center justify-between gap-4">
           <div>
             <h2 className="text-[20px] font-semibold tracking-[-0.02em] text-[#1D1D1F]">
-              Add Clothes to Cloud Wardrobe
+              Add Clothes
             </h2>
             <p className="mt-0.5 text-[13px] text-[#6E6E73]">
-              Upload up to {MAX_BATCH_UPLOAD_FILES} pieces at once. Each photo is analyzed for fabric, fit, color, and saved privately to your cloud account.
+              Upload up to {MAX_BATCH_UPLOAD_FILES} pieces at once.
             </p>
           </div>
           <button
@@ -339,7 +339,7 @@ export function BatchUploadModal({
               Drop clothing photos here, or browse from your device
             </p>
             <p className="mt-1 text-[13px] text-[#6E6E73]">
-              JPEG, PNG, WebP, or AVIF · Up to 50 items per batch · Synced privately to your account
+              JPEG, PNG, WebP, or AVIF · Up to 50 items
             </p>
             <button
               type="button"
@@ -422,10 +422,7 @@ export function BatchUploadModal({
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-4 border-t border-black/[0.06] bg-[#FAFAFC] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <p className="text-[12px] text-[#6E6E73]">
-            AI fabric inspection + image vectors saved to cloud
-          </p>
+        <div className="px-6 py-4 border-t border-black/[0.06] bg-[#FAFAFC] flex items-center justify-end gap-2.5">
           <div className="flex items-center justify-end gap-2.5 shrink-0">
             <button
               type="button"

@@ -136,10 +136,10 @@ export function CombinationsView({
       <section className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 pt-2">
         <div className="max-w-2xl">
           <h1 className="text-[32px] sm:text-[42px] font-semibold tracking-[-0.03em] leading-[1.08] text-[#1D1D1F]">
-            Ranked styling combinations.
+            Ranked combinations.
           </h1>
-          <p className="mt-3 text-[16px] leading-[1.6] text-[#6E6E73]">
-            OKLCH color science, silhouette proportion physics, and 128-dim visual vectors pre-screen 8 diverse finalists locally—then our cross-encoder stylist ranks the top 5 specifically for your coloring and frame.
+          <p className="mt-2 text-[15px] leading-[1.6] text-[#6E6E73]">
+            Layered outfits tailored to your coloring, season, and occasion.
           </p>
         </div>
 
@@ -337,7 +337,7 @@ export function CombinationsView({
             No ranked combinations yet
           </h2>
           <p className="mt-2 text-[14px] text-[#6E6E73]">
-            Select an occasion and season above, then run the stylist ranking engine across your uploaded pieces.
+            Pick an occasion and season above to generate outfits.
           </p>
         </section>
       ) : (
@@ -458,7 +458,7 @@ export function CombinationsView({
                         <p className="font-mono text-[14px] font-semibold text-[#1D1D1F] tabular-nums">
                           {combo.vectorHarmonyScore}%
                         </p>
-                        <p className="text-[10.5px] text-[#6E6E73]">Vector</p>
+                        <p className="text-[10.5px] text-[#6E6E73]">Cohesion</p>
                       </div>
                     </div>
 

@@ -107,10 +107,10 @@ export function ProfileView({
       <section className="flex flex-col md:flex-row md:items-end justify-between gap-6 pt-2">
         <div className="max-w-2xl">
           <h1 className="text-[32px] sm:text-[42px] font-semibold tracking-[-0.03em] leading-[1.08] text-[#1D1D1F]">
-            Your personal style profile.
+            Style profile.
           </h1>
-          <p className="mt-3 text-[16px] leading-[1.6] text-[#6E6E73]">
-            Upload your photo and our AI automatically analyzes your coloring, features, and proportions—auto-filling your style profile and deeply personalizing every outfit, companion, and shopping recommendation across the entire app.
+          <p className="mt-2 text-[15px] leading-[1.6] text-[#6E6E73]">
+            Upload a portrait to generate your color season, contrast read, and ideal silhouettes.
           </p>
         </div>
 
@@ -192,21 +192,13 @@ export function ProfileView({
 
             {profile.blueprint ? (
               <div className="pt-5 border-t border-black/[0.06] space-y-5">
-                <div className="space-y-1">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <h3 className="text-[15px] font-semibold text-[#1D1D1F]">
-                      What Looks Best on You
-                    </h3>
-                    <span className="text-[12px] font-medium text-[#0071E3]">
-                      {profile.blueprint.colorSeason} · {profile.blueprint.contrastLevel}
-                    </span>
-                  </div>
-                  <p className="text-[11.5px] text-[#16A34A] flex items-center gap-1">
-                    <Check className="w-3.5 h-3.5" aria-hidden="true" />
-                    {profile.blueprint.photoAnalyzed
-                      ? 'Portrait analyzed & saved · Actively powering all outfits & advisor'
-                      : 'Saved to cloud · Actively powering all outfits & advisor'}
-                  </p>
+                <div className="flex items-baseline justify-between gap-2">
+                  <h3 className="text-[15px] font-semibold text-[#1D1D1F]">
+                    What Looks Best on You
+                  </h3>
+                  <span className="text-[12px] font-medium text-[#0071E3]">
+                    {profile.blueprint.colorSeason} · {profile.blueprint.contrastLevel}
+                  </span>
                 </div>
 
                 {profile.blueprint.visualProfile && (
@@ -302,7 +294,7 @@ export function ProfileView({
               </div>
             ) : (
               <div className="pt-5 border-t border-black/[0.06] text-[13px] text-[#6E6E73]">
-                Upload a clear portrait photo and we&rsquo;ll automatically detect your skin undertone, color season, hex palette, flattering cuts, and save them to your cloud profile to personalize recommendations everywhere.
+                Upload a portrait photo to detect your color season, undertone, and flattering silhouettes.
               </div>
             )}
           </section>
@@ -507,15 +499,11 @@ export function ProfileView({
             />
           </div>
 
-          <div className="pt-2 flex items-center justify-between gap-4">
-            {savedNotice ? (
+          <div className="pt-2 flex items-center justify-end gap-4">
+            {savedNotice && (
               <span className="inline-flex items-center gap-1.5 text-[13px] font-medium text-[#16A34A]">
                 <Check className="w-4 h-4" />
-                Profile saved to server
-              </span>
-            ) : (
-              <span className="text-[12px] text-[#86868B]">
-                Synced automatically with combination ranking & shopping advisor
+                Saved
               </span>
             )}
 
