@@ -21,9 +21,11 @@ import {
   normalizeVector,
 } from '../src/utils/styleEngine.ts';
 import {
+  type AdvisorReplyMode,
   buildAdvisorWardrobeContext,
+  buildDeterministicFallbackSummary,
   ensureGarmentHyperlinks,
-  formatCompactHistoryForAdvisor,
+  partitionAdvisorHistory,
 } from '../src/utils/advisorRetrieval.ts';
 
 export interface ModelTier {
@@ -84,6 +86,64 @@ export const FAST_HIERARCHY: ModelTier[] = [
     model: 'gemini-4-hydrogen',
     thinkingLevel: ThinkingLevel.MEDIUM,
     supportsSearch: true,
+  },
+];
+
+// Token-efficient, low-TTFT hierarchies for adaptive streaming Advisor chats
+export const ADVISOR_QUICK_HIERARCHY: ModelTier[] = [
+  {
+    id: 'gemini-4-hydrogen (low)',
+    model: 'gemini-4-hydrogen',
+    thinkingLevel: ThinkingLevel.LOW,
+    supportsSearch: true,
+  },
+  {
+    id: 'gemini-3.1-flash-lite (low)',
+    model: 'gemini-3.1-flash-lite',
+    thinkingLevel: ThinkingLevel.LOW,
+    supportsSearch: false,
+  },
+  {
+    id: 'gemini-3.1-flash-lite (minimal)',
+    model: 'gemini-3.1-flash-lite',
+    thinkingLevel: ThinkingLevel.MINIMAL,
+    supportsSearch: false,
+  },
+];
+
+export const ADVISOR_STANDARD_HIERARCHY: ModelTier[] = [
+  {
+    id: 'gemini-4-hydrogen (medium)',
+    model: 'gemini-4-hydrogen',
+    thinkingLevel: ThinkingLevel.MEDIUM,
+    supportsSearch: true,
+  },
+  {
+    id: 'gemini-4-hydrogen (low)',
+    model: 'gemini-4-hydrogen',
+    thinkingLevel: ThinkingLevel.LOW,
+    supportsSearch: true,
+  },
+  {
+    id: 'gemini-3.1-flash-lite (medium)',
+    model: 'gemini-3.1-flash-lite',
+    thinkingLevel: ThinkingLevel.MEDIUM,
+    supportsSearch: false,
+  },
+];
+
+export const MEMORY_SUMMARY_HIERARCHY: ModelTier[] = [
+  {
+    id: 'gemini-3.1-flash-lite (minimal)',
+    model: 'gemini-3.1-flash-lite',
+    thinkingLevel: ThinkingLevel.MINIMAL,
+    supportsSearch: false,
+  },
+  {
+    id: 'gemini-4-hydrogen (low)',
+    model: 'gemini-4-hydrogen',
+    thinkingLevel: ThinkingLevel.LOW,
+    supportsSearch: false,
   },
 ];
 
@@ -1185,31 +1245,148 @@ export interface AdvisorImageInput {
   label?: string;
 }
 
+export interface AdvisorMemoryInput {
+  summary?: string;
+  summarizedCount?: number;
+}
+
+export interface AdvisorChatResult {
+  content: string;
+  referencedItemIds: string[];
+  sources: GroundingSource[];
+  modelUsed: string;
+  memorySummary: string;
+  summarizedCount: number;
+  replyMode: AdvisorReplyMode;
+  contextSummarized: boolean;
+}
+
+function extractGroundingSources(
+  rawChunks: unknown[] | undefined,
+  seenUris: Set<string>,
+  target: GroundingSource[]
+): void {
+  if (!Array.isArray(rawChunks)) return;
+  for (const chunk of rawChunks) {
+    const web = (chunk as { web?: { uri?: string; title?: string } }).web;
+    if (web?.uri && !seenUris.has(web.uri)) {
+      try {
+        const parsedUrl = new URL(web.uri);
+        if (parsedUrl.protocol === 'https:' || parsedUrl.protocol === 'http:') {
+          seenUris.add(web.uri);
+          target.push({
+            title: web.title || parsedUrl.hostname,
+            uri: parsedUrl.toString(),
+          });
+        }
+      } catch {
+        // Skip malformed URIs
+      }
+    }
+  }
+}
+
 /**
- * Engine-Backed Editorial Stylist & Shopping Advisor:
- * Combines anti-repetition full-closet retrieval, pre-computed OKLCH + multi-layer verified outfit blueprints,
- * live Wardrobe DNA telemetry, multimodal store-item comparison (up to 4 photos), intent-gated Google Search,
- * and deterministic garment hyperlink verification.
+ * Incrementally compresses older advisor chat turns into a compact <= 110-word memory dossier
+ * using the cheapest fast model, with instant deterministic fallback so memory never blocks chat.
  */
-export async function chatWithShoppingAdvisor(
+async function summarizeAdvisorMemory(
+  ai: GoogleGenAI,
+  existingSummary: string,
+  newlyEvictedTurns: AdvisorMessage[]
+): Promise<string> {
+  if (newlyEvictedTurns.length === 0) {
+    return existingSummary.trim();
+  }
+
+  const turnsText = newlyEvictedTurns
+    .map((m) => {
+      const clean = (m.content || '')
+        .replace(/\[\[(?:item|garment):[a-zA-Z0-9_-]+\|([^\]]+)\]\]/g, '$1')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return `${m.role === 'user' ? 'User' : 'Advisor'}: ${clean.slice(0, 320)}`;
+    })
+    .join('\n');
+
+  const prompt = `${
+    existingSummary.trim()
+      ? `Existing memory summary:\n${existingSummary.trim()}\n\n`
+      : ''
+  }Newly archived chat turns to fold into memory:\n${turnsText}
+
+Update the rolling conversation memory into 3–5 ultra-compact bullet points (<= 110 words total).
+Preserve ONLY durable facts:
+- User preferences, dislikes, fit/comfort rules, budget limits, upcoming events/trips/weather
+- Pieces or buys they liked, rejected, or decided on
+- Open styling goals
+Omit filler, greetings, and long garment lists.`;
+
+  try {
+    const res = await executeWithModelHierarchy(MEMORY_SUMMARY_HIERARCHY, async (tier) => {
+      const response = await ai.models.generateContent({
+        model: tier.model,
+        contents: prompt,
+        config: {
+          systemInstruction:
+            'You compress styling chat history into dense, factual bulleted memory (<= 110 words). Plain bullets only, zero intro text.',
+          ...buildThinkingConfig(tier),
+        },
+      });
+      const text = (response.text ?? '').trim();
+      if (!text) throw new Error('Empty memory summary');
+      return text.slice(0, 900);
+    });
+    return res.data;
+  } catch {
+    return buildDeterministicFallbackSummary(existingSummary, newlyEvictedTurns);
+  }
+}
+
+async function prepareAdvisorChatPayload(
+  ai: GoogleGenAI,
   userMessage: string,
   history: AdvisorMessage[],
   garments: Garment[],
   savedOutfits: OutfitCombination[],
   profile: UserProfile,
-  attachedImages: AdvisorImageInput[] = [],
-  portraitImage?: { base64: string; mimeType: string } | null
-): Promise<{
-  content: string;
-  referencedItemIds: string[];
-  sources: GroundingSource[];
-  modelUsed: string;
-}> {
-  const ai = getGenAIClient();
-  const tiers = await resolveFullHierarchy(DEEP_REASONING_HIERARCHY, ai);
-
+  attachedImages: AdvisorImageInput[],
+  portraitImage?: { base64: string; mimeType: string } | null,
+  memory?: AdvisorMemoryInput,
+  onStatus?: (phase: 'memory' | 'thinking') => void
+) {
   const hasImages = attachedImages.length > 0;
   const hasPortrait = Boolean(portraitImage?.base64 && portraitImage?.mimeType);
+
+  // Step 1: Partition history into sliding verbatim context window + older turns for rolling memory
+  const historyWindow = partitionAdvisorHistory(history, {
+    maxRecentMessages: 6,
+    maxRecentChars: 2400,
+    existingSummary: memory?.summary,
+    summarizedCount: memory?.summarizedCount,
+  });
+
+  let memorySummary = (memory?.summary ?? '').trim();
+  let summarizedCount = historyWindow.olderMessages.length;
+  let contextSummarized = false;
+
+  if (historyWindow.needsSummarization) {
+    onStatus?.('memory');
+    memorySummary = await summarizeAdvisorMemory(
+      ai,
+      memorySummary,
+      historyWindow.newlyEvictedMessages.length > 0
+        ? historyWindow.newlyEvictedMessages
+        : historyWindow.olderMessages
+    );
+    summarizedCount = historyWindow.olderMessages.length;
+    contextSummarized = true;
+  } else if (historyWindow.olderMessages.length === 0) {
+    memorySummary = '';
+    summarizedCount = 0;
+  }
+
+  onStatus?.('thinking');
 
   const wardrobeDna = computeWardrobeIntelligenceSummary(garments, savedOutfits, profile);
   const advisorCtx = buildAdvisorWardrobeContext(
@@ -1217,91 +1394,109 @@ export async function chatWithShoppingAdvisor(
     history,
     userMessage,
     profile,
-    hasImages
+    hasImages,
+    { imageCount: attachedImages.length }
   );
+
+  const replyMode = advisorCtx.replyMode;
 
   const compactSaved =
     savedOutfits.length > 0
       ? savedOutfits
-          .slice(0, 6)
+          .slice(0, replyMode === 'quick' ? 3 : 6)
           .map((o) => `${o.title} (${o.occasion}, score ${o.score})`)
           .join('; ')
       : 'None saved yet.';
 
-  const recentTurns = formatCompactHistoryForAdvisor(history);
-
   const imageRules = hasImages
     ? `\nPHOTO BUY/COMPARE PROTOCOL (${attachedImages.length} item${attachedImages.length > 1 ? 's' : ''} uploaded: Option 1${attachedImages.length > 1 ? `..Option ${attachedImages.length}` : ''}):
-- Visually inspect each uploaded item's exact color temperature, saturation, fabric drape/weight, construction quality, silhouette volume, and formality — and evaluate directly against the user's portrait & 12-season coloring.
-- Structure your response cleanly in Markdown:
-  1. **### Verdict** — Decisive **BUY**, **SKIP**, or **#1 Winner: Option X** with an honest **X/10 Wardrobe Fit** score (do not hesitate to say SKIP if it clashes, duplicates, or has poor proportions).
-  2. **Why It Works (or Fails) on You** — Concrete color temperature, contrast, and silhouette geometry for THIS person.
-  3. **Outfits You Can Build Immediately** — 2–3 real, properly layered outfits pairing the recommended buy with FRESH owned pieces from FRESH CLOSET SPOTLIGHT using [[item:GARMENT_ID|Exact Garment Name]] links.
-  4. **Duplicate & ROI Check** — Call out overlap with existing owned pieces (link them!) or confirm the exact wardrobe gap it closes.`
+- Visually inspect each uploaded item's exact color temperature, saturation, fabric drape/weight, construction quality, silhouette volume, and formality against the user's portrait & 12-season coloring.
+- Structure cleanly in Markdown:
+  1. **### Verdict** — Decisive **BUY**, **SKIP**, or **#1 Winner: Option X** with an honest **X/10 Wardrobe Fit** score (say SKIP without hesitation if it clashes, duplicates, or has weak proportions).
+  2. **Why It Works (or Fails) on You** — Color temperature, contrast, and silhouette geometry for THIS person.
+  3. **Outfits You Can Build Immediately** — 2–3 real, properly layered outfits pairing the buy with FRESH owned pieces using [[item:GARMENT_ID|Exact Garment Name]] links.
+  4. **Duplicate & ROI Check** — Call out overlap with existing owned pieces (link them!) or confirm the wardrobe gap it closes.`
     : '';
 
   const seasonRule =
     advisorCtx.effectiveSeason === 'Summer'
       ? '- STRICT SUMMER RULE: User is asking for Summer / hot weather. NEVER suggest wearing sweaters, wool/merino/cashmere knits, hoodies, fleeces, corduroy, or winter coats. Only breathable owned shirts, tees, polos, linen, lightweight trousers/shorts, and light footwear.'
-      : '- REAL-WORLD OWNED LAYERING RULE: Whenever you recommend a sweater, cardigan, pullover, vest, hoodie, or jacket, you MUST explicitly specify the EXACT owned BASE underlayer (shirt, oxford, tee, or polo) from [BASE TOPS] using [[item:GARMENT_ID|Exact Garment Name]] — NEVER tell them to wear a sweater bare or over a vague imaginary "crisp shirt". If NO compatible base top exists in their uploaded catalog, honestly tell them they do not have a suitable underlayer uploaded yet instead of inventing one.';
+      : '- REAL-WORLD OWNED LAYERING RULE: Whenever recommending a sweater, cardigan, pullover, vest, hoodie, or jacket, explicitly name the EXACT owned BASE underlayer (shirt, oxford, tee, or polo) from [BASE TOPS] using [[item:GARMENT_ID|Exact Garment Name]] — NEVER suggest wearing a sweater bare or over a vague imaginary shirt. If NO compatible base top exists in their uploaded catalog, state that honestly.';
+
+  const lengthBudgetRule =
+    replyMode === 'quick'
+      ? '- **ULTRA-CONCISE TOKEN-SAVING MODE**: This is a direct question or quick follow-up. Answer IMMEDIATELY in **2–4 sharp sentences or 2–3 crisp bullets (~35–85 words max)**. NO section headers, NO multi-paragraph essays, NO filler intros/outros. Lead with the verdict (**Yes**, **No**, or exact piece) and the concrete styling reason.'
+      : replyMode === 'standard'
+        ? '- **CRISP EDITORIAL MODE**: Keep your reply high-signal, scannable, and under **190 words** (skip unnecessary filler paragraphs). Use tight bullets, concrete cut/color/proportion mechanics, and include a 1–2 line **What NOT to Wear** guardrail when styling an outfit.'
+        : '- **DEEP DIRECTOR BRIEF MODE**: Give a structured, high-authority fashion director breakdown under **320 words** using crisp ### headings and tight bullets — zero fluff paragraphs.';
+
+  const memoryBlock = memorySummary
+    ? `\nCONVERSATION MEMORY (Summarized earlier turns — respect all preferences, dislikes, constraints & prior decisions here):\n${memorySummary}\n`
+    : '';
+
+  const catalogHeader =
+    replyMode === 'quick'
+      ? `RELEVANT OWNED WARDROBE SUBSET (${garments.length} total owned — top matches for this question):`
+      : `COMPLETE CATEGORIZED WARDROBE (${garments.length} items — ordered freshest & most query-relevant FIRST; |RECENTLY_USED items are at the end):`;
 
   const systemInstruction = `You are a sharp, opinionated, world-class Private Fashion Director & Shopping Advisor inside "What do I Wear?".
-You have the taste of a senior editorial stylist from Milan/Paris/Tokyo combined with 12-season color analysis, proportion geometry, multi-layer dressing mastery, and ruthless wardrobe ROI discipline.
+You combine Milan/Paris/Tokyo editorial taste with 12-season color theory (undertone, value contrast, chroma), proportion physics (1/3–2/3 visual rule, collar/hem/drape geometry), real multi-layer dressing, and ruthless wardrobe ROI discipline.
 
-USER PROFILE & STORED PORTRAIT ANALYSIS${hasPortrait ? ' (User portrait photo attached — inspect their real skin undertone, hair/eye contrast, and frame directly)' : ''}:
+USER PROFILE & STORED PORTRAIT ANALYSIS${hasPortrait ? ' (User portrait photo attached — inspect skin undertone, hair/eye contrast, and frame directly)' : ''}:
 ${compactProfileSummary(profile)}
-
+${memoryBlock}
 EXACT UPLOADED WARDROBE INVENTORY (EVERYTHING THE USER OWNS IS HERE — NEVER ASSUME OR INVENT ANYTHING OUTSIDE THIS LIST):
 ${advisorCtx.ownedInventorySummary}
 
-WARDROBE INTELLIGENCE SUMMARY (${garments.length} total pieces | ${advisorCtx.unexploredCount} pieces NOT YET discussed in this thread):
+WARDROBE DNA (${garments.length} pieces | ${advisorCtx.unexploredCount} unexplored in this thread):
 ${wardrobeDna.compactDossier}
 
-OWNED-CLOSET LAYERING COMPATIBILITY & DO-NOT-WEAR GUIDE (Deterministic physics for what works under their sweaters and what to AVOID from their own closet):
+OWNED-CLOSET LAYERING, CROSS-VERIFIED PAIRINGS & DO-NOT-WEAR GUIDE:
 ${advisorCtx.layeringGuideSection}
 
-FRESH CLOSET SPOTLIGHT FOR THIS REQUEST (Top fresh, unexplored, ${advisorCtx.effectiveSeason}-appropriate matches — PRIORITIZE THESE FIRST):
+FRESH CLOSET SPOTLIGHT (${advisorCtx.effectiveSeason}-appropriate, prioritize first):
 ${advisorCtx.spotlightSection}
-
-PRE-VERIFIED MULTI-LAYER FRESH OUTFIT BLUEPRINTS (Already scored for OKLCH color harmony, proportion physics, 12-season flattery, thermal realism & anti-repetition — draw from or remix these when recommending outfits):
-${advisorCtx.verifiedBlueprintsSection}
-
-RECENTLY DISCUSSED ITEMS — COOLDOWN LIST (DO NOT REPEAT THESE unless the user explicitly asked about them in this message):
+${
+  replyMode !== 'quick' || advisorCtx.intent.wantsOutfits
+    ? `\nPRE-VERIFIED MULTI-LAYER OUTFIT BLUEPRINTS (OKLCH color, proportion & anti-repetition checked):\n${advisorCtx.verifiedBlueprintsSection}\n`
+    : ''
+}
+COOLDOWN LIST (DO NOT REPEAT unless user explicitly asked for them):
 ${advisorCtx.cooldownSection}
 
-COMPLETE CATEGORIZED WARDROBE (${garments.length} items — ordered freshest & most query-relevant FIRST inside each category; items tagged |RECENTLY_USED are at the end):
+${catalogHeader}
 ${advisorCtx.categorizedCatalog}
 
-SAVED LOOKS:
-${compactSaved}
+SAVED LOOKS: ${compactSaved}
 
 NON-NEGOTIABLE STYLING & GROUNDING RULES:
-1. **STRICT CLOSED-WARDROBE GROUNDING (ZERO INVENTED CLOTHES)**: Everything the user owns is already uploaded in the catalog above. NEVER tell the user to wear an imaginary or generic garment they do NOT own (NEVER say "throw on a crisp white shirt underneath", "pair with a plain tee", "add dark jeans", or "wear white sneakers" unless you are citing an EXACT uploaded item with [[item:GARMENT_ID|Exact Garment Name]]!). Every single garment in an outfit recommendation MUST be an actual uploaded item from the catalog with its [[item:GARMENT_ID|Exact Garment Name]] link. If a needed layer (like a lightweight collared shirt or footwear) is missing from their uploaded closet, explicitly label it under **Missing From Your Uploaded Closet** (suggestion to upload or buy) — never pretend they already own it.
-2. **COMPLETE HEAD-TO-TOE LAYERED OUTFITS (NEVER JUST 2 PIECES)**: Whenever recommending an outfit, list EVERY real uploaded layer explicitly in dressing order so the user can actually get dressed:
-   - **Base Layer (Underneath)**: Mandatory under EVERY sweater, cardigan, pullover, hoodie, vest, or jacket — cite the exact owned [[item:ID|Name]] from [BASE TOPS] and explain how the collar, cuffs, or hem sit underneath.
-   - **Mid Layer** (when layered): [[item:ID|Name]]
-   - **Outer Layer** (when weather/occasion calls for it): [[item:ID|Name]]
-   - **Bottoms**: [[item:ID|Name]]
-   - **Footwear**: [[item:ID|Name]] (always include when FOOTWEAR > 0)
-   - **Accessory**: [[item:ID|Name]] (when owned and helpful)
-3. **EXPLICIT "WHAT NOT TO WEAR" GUIDANCE**: Whenever recommending outfits or advising how to wear a piece (especially sweaters/knits), include a crisp **What NOT to Wear** section or bullet naming 1–2 specific owned pieces from their closet ([[item:ID|Name]]) or pairing mistakes to AVOID (e.g. bulky/heavy base under a sweater, open camp collar under a crewneck, undertone/pattern clash, or wrong weather weight) and explain why.
-4. **ZERO REPETITION / FULL-CLOSET MASTERY**: The user owns ${garments.length} distinct garments. Actively mine FRESH CLOSET SPOTLIGHT, PRE-VERIFIED BLUEPRINTS, and unexplored items across ALL categories. NEVER recycle items on the COOLDOWN LIST or marked |RECENTLY_USED unless the user explicitly named them in their message.
-5. **NO AMATEUR AI CLICHÉS**: Strictly FORBIDDEN phrases: "elevates your look", "effortless chic", "versatile staple", "ties everything together", "adds a pop of color", "perfect for any occasion", or robotic filler intros ("Great question!", "I'd love to help!"). Jump straight into concrete, fabric-and-cut styling mechanics.
+1. **STRICT CLOSED-WARDROBE GROUNDING (ZERO INVENTED CLOTHES)**: Everything the user owns is in the catalog above. NEVER tell them to wear an imaginary or generic item they do NOT own (never say "throw on a crisp white shirt" or "add white sneakers" unless citing an EXACT uploaded item with [[item:GARMENT_ID|Exact Garment Name]]). If a needed layer is missing, explicitly label it under **Missing From Your Closet** (suggestion to buy/upload).
+2. **COMPLETE LAYERED OUTFITS (WHEN BUILDING AN OUTFIT)**: List real uploaded layers in dressing order — **Base Layer** (mandatory under sweaters/cardigans/hoodies/jackets), **Mid Layer**, **Outer Layer**, **Bottoms**, **Footwear** (when owned), **Accessory** (when helpful) — noting exact styling mechanics (tuck, collar sit, sleeve cuff, hem break).
+3. **EXPLICIT "WHAT NOT TO WEAR" GUARDRAIL**: When styling an outfit or piece, call out 1–2 concrete owned pieces ([[item:ID|Name]]) or pairing traps to AVOID (bulk under knit, camp collar under crewneck, warm/cool clash, wrong weather weight) and why.
+4. **ZERO REPETITION / FULL-CLOSET MASTERY**: Mine FRESH CLOSET SPOTLIGHT, PRE-VERIFIED BLUEPRINTS, and unexplored pieces across all ${garments.length} garments. Never recycle COOLDOWN items unless explicitly requested.
+5. **ZERO AMATEUR CLICHÉS OR FILLER**: Strictly FORBIDDEN: "elevates your look", "effortless chic", "versatile staple", "ties everything together", "adds a pop of color", "Great question!", "I'd love to help!". Jump straight into concrete verdict & styling mechanics.
 6. ${seasonRule}
-7. **MANDATORY CLICKABLE HYPERLINKS**: Whenever you mention ANY owned piece from the catalog, ALWAYS format it as [[item:GARMENT_ID|Exact Garment Name]] using ONLY real GARMENT_IDs from the catalog above (never invent IDs for items they don't own).
-8. **CLEAN MARKDOWN**: Use **bold** verdicts, ### section headers, and crisp bullet lists.
-9. **SHOPPING RIGOR**: When recommending what to buy (or flagging a missing layer), specify exact shade/undertone, fabric/weight, cut/rise, price tier aligned to their ${profile.budgetRange || 'Mid-Range'} budget, and name specific owned [[item:ID|Name]] pieces it unlocks.${imageRules}
-10. Stay tight, high-signal, and scannable (under ${hasImages ? '380' : '340'} words unless they ask for a deep full-closet audit).`;
+7. **MANDATORY CLICKABLE HYPERLINKS**: Format EVERY owned catalog item as [[item:GARMENT_ID|Exact Garment Name]] using ONLY real GARMENT_IDs above.
+8. **SHOPPING RIGOR**: For buys or missing layers, specify exact shade/undertone, fabric/weight, cut/rise, price tier for their ${profile.budgetRange || 'Mid-Range'} budget, and which owned [[item:ID|Name]] pieces it unlocks.${imageRules}
+9. ${lengthBudgetRule}`;
 
-  const textPrompt = `${recentTurns ? `Recent conversation context:\n${recentTurns}\n\n` : ''}Current user request: ${userMessage}`;
+  const textPrompt = `${
+    historyWindow.recentFormatted
+      ? `Active recent conversation window:\n${historyWindow.recentFormatted}\n\n`
+      : ''
+  }Current user request: ${userMessage}`;
 
   const multimodalParts: Array<
     { text: string } | { inlineData: { mimeType: string; data: string } }
   > = [];
 
-  if (hasPortrait && portraitImage) {
+  // Send portrait photo on deeper / outfit / shopping photo turns (skip on ultra-quick text follow-ups to save vision tokens when portrait blueprint is already in profile!)
+  const includePortraitBytes =
+    hasPortrait && portraitImage && (replyMode !== 'quick' || hasImages || !profile.blueprint?.photoAnalyzed);
+
+  if (includePortraitBytes && portraitImage) {
     multimodalParts.push({
-      text: '[User Stored Portrait Photo — reference their real skin tone, hair/eye contrast, and frame]',
+      text: '[User Stored Portrait Photo — reference real skin undertone, hair/eye contrast, and frame]',
     });
     multimodalParts.push({
       inlineData: {
@@ -1328,50 +1523,170 @@ NON-NEGOTIABLE STYLING & GROUNDING RULES:
     multimodalParts.push({ text: textPrompt });
   }
 
-  const useWebSearch = advisorCtx.intent.needsWebSearch;
+  const baseHierarchy =
+    replyMode === 'quick'
+      ? ADVISOR_QUICK_HIERARCHY
+      : replyMode === 'standard'
+        ? ADVISOR_STANDARD_HIERARCHY
+        : DEEP_REASONING_HIERARCHY;
 
-  const res = await executeWithModelHierarchy(tiers, async (tier) => {
+  const tiers = await resolveFullHierarchy(baseHierarchy, ai);
+
+  return {
+    tiers,
+    systemInstruction,
+    contents: multimodalParts.length > 0 ? { parts: multimodalParts } : textPrompt,
+    useWebSearch: advisorCtx.intent.needsWebSearch,
+    memorySummary,
+    summarizedCount,
+    replyMode,
+    contextSummarized,
+  };
+}
+
+/**
+ * Non-streaming Shopping Advisor chat (kept for backward compatibility & direct API callers).
+ */
+export async function chatWithShoppingAdvisor(
+  userMessage: string,
+  history: AdvisorMessage[],
+  garments: Garment[],
+  savedOutfits: OutfitCombination[],
+  profile: UserProfile,
+  attachedImages: AdvisorImageInput[] = [],
+  portraitImage?: { base64: string; mimeType: string } | null,
+  memory?: AdvisorMemoryInput
+): Promise<AdvisorChatResult> {
+  const ai = getGenAIClient();
+  const prepared = await prepareAdvisorChatPayload(
+    ai,
+    userMessage,
+    history,
+    garments,
+    savedOutfits,
+    profile,
+    attachedImages,
+    portraitImage,
+    memory
+  );
+
+  const res = await executeWithModelHierarchy(prepared.tiers, async (tier) => {
     const response = await ai.models.generateContent({
       model: tier.model,
-      contents: multimodalParts.length > 0 ? { parts: multimodalParts } : textPrompt,
+      contents: prepared.contents,
       config: {
-        systemInstruction,
+        systemInstruction: prepared.systemInstruction,
         ...buildThinkingConfig(tier),
-        ...(tier.supportsSearch && useWebSearch ? { tools: [{ googleSearch: {} }] } : {}),
+        ...(tier.supportsSearch && prepared.useWebSearch ? { tools: [{ googleSearch: {} }] } : {}),
       },
     });
 
     const rawContent = (response.text ?? '').trim();
     if (!rawContent) throw new Error('Empty advisor reply');
 
-    // Extract Google Search grounding sources if present
-    const rawChunks =
-      response.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
     const sources: GroundingSource[] = [];
-    const seenUris = new Set<string>();
-    for (const chunk of rawChunks) {
-      const web = (chunk as { web?: { uri?: string; title?: string } }).web;
-      if (web?.uri && !seenUris.has(web.uri)) {
-        try {
-          const parsedUrl = new URL(web.uri);
-          if (parsedUrl.protocol === 'https:' || parsedUrl.protocol === 'http:') {
-            seenUris.add(web.uri);
-            sources.push({
-              title: web.title || parsedUrl.hostname,
-              uri: parsedUrl.toString(),
-            });
-          }
-        } catch {
-          // Skip malformed URIs
-        }
-      }
-    }
+    extractGroundingSources(
+      response.candidates?.[0]?.groundingMetadata?.groundingChunks,
+      new Set<string>(),
+      sources
+    );
 
-    // Validate & auto-repair all [[item:ID|Name]] hyperlinks so every mentioned garment is clickable
     const { content, referencedItemIds } = ensureGarmentHyperlinks(rawContent, garments);
-
     return { content, referencedItemIds, sources: sources.slice(0, 4) };
   });
 
-  return { ...res.data, modelUsed: res.modelUsed };
+  return {
+    ...res.data,
+    modelUsed: res.modelUsed,
+    memorySummary: prepared.memorySummary,
+    summarizedCount: prepared.summarizedCount,
+    replyMode: prepared.replyMode,
+    contextSummarized: prepared.contextSummarized,
+  };
+}
+
+/**
+ * True token-by-token streaming Shopping Advisor using Gemini `generateContentStream`.
+ * Emits raw delta chunks live via `onDelta`, fails over cleanly across model tiers ONLY if
+ * zero text chunks were emitted, then verifies all garment hyperlinks on completion.
+ */
+export async function streamShoppingAdvisorChat(
+  userMessage: string,
+  history: AdvisorMessage[],
+  garments: Garment[],
+  savedOutfits: OutfitCombination[],
+  profile: UserProfile,
+  attachedImages: AdvisorImageInput[] = [],
+  portraitImage?: { base64: string; mimeType: string } | null,
+  memory?: AdvisorMemoryInput,
+  callbacks?: {
+    onDelta?: (delta: string) => void;
+    onStatus?: (phase: 'memory' | 'thinking') => void;
+  }
+): Promise<AdvisorChatResult> {
+  const ai = getGenAIClient();
+  const prepared = await prepareAdvisorChatPayload(
+    ai,
+    userMessage,
+    history,
+    garments,
+    savedOutfits,
+    profile,
+    attachedImages,
+    portraitImage,
+    memory,
+    callbacks?.onStatus
+  );
+
+  let emittedAnyChunk = false;
+
+  const res = await executeWithModelHierarchy(prepared.tiers, async (tier) => {
+    // Never retry a second tier if partial tokens were already streamed to the client
+    if (emittedAnyChunk) {
+      throw new Error('Stream interrupted mid-response.');
+    }
+
+    const stream = await ai.models.generateContentStream({
+      model: tier.model,
+      contents: prepared.contents,
+      config: {
+        systemInstruction: prepared.systemInstruction,
+        ...buildThinkingConfig(tier),
+        ...(tier.supportsSearch && prepared.useWebSearch ? { tools: [{ googleSearch: {} }] } : {}),
+      },
+    });
+
+    let accumulated = '';
+    const sources: GroundingSource[] = [];
+    const seenUris = new Set<string>();
+
+    for await (const chunk of stream) {
+      const textPiece = chunk.text ?? '';
+      if (textPiece) {
+        emittedAnyChunk = true;
+        accumulated += textPiece;
+        callbacks?.onDelta?.(textPiece);
+      }
+      extractGroundingSources(
+        chunk.candidates?.[0]?.groundingMetadata?.groundingChunks,
+        seenUris,
+        sources
+      );
+    }
+
+    const rawContent = accumulated.trim();
+    if (!rawContent) throw new Error('Empty advisor stream reply');
+
+    const { content, referencedItemIds } = ensureGarmentHyperlinks(rawContent, garments);
+    return { content, referencedItemIds, sources: sources.slice(0, 4) };
+  });
+
+  return {
+    ...res.data,
+    modelUsed: res.modelUsed,
+    memorySummary: prepared.memorySummary,
+    summarizedCount: prepared.summarizedCount,
+    replyMode: prepared.replyMode,
+    contextSummarized: prepared.contextSummarized,
+  };
 }

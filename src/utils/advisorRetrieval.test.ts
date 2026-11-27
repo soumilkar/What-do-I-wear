@@ -2,11 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildAdvisorWardrobeContext,
+  buildDeterministicFallbackSummary,
+  classifyAdvisorQueryMode,
   detectAdvisorIntent,
   ensureGarmentHyperlinks,
   extractExplicitlyAskedIds,
   extractRecentlyMentionedIds,
   formatCompactHistoryForAdvisor,
+  partitionAdvisorHistory,
+  sanitizeStreamingMarkdown,
 } from './advisorRetrieval';
 import type { AdvisorMessage, Garment, UserProfile } from '../types/styling';
 
@@ -461,5 +465,114 @@ test('buildAdvisorWardrobeContext builds owned layering guide, flags missing bas
   assert.ok(!linked.referencedItemIds.includes('base_2'), 'Avoid-only item must NOT appear in recommended outfit chip tray');
   assert.deepEqual(linked.referencedItemIds, ['base_1', 'mid_1', 'bot_1', 'shoe_1']);
 });
+
+test('classifyAdvisorQueryMode routes quick questions, standard outfit requests, and deep audits to save tokens', () => {
+  assert.equal(
+    classifyAdvisorQueryMode('Can I wear brown loafers with navy chinos?'),
+    'quick',
+    'Direct yes/no styling check should route to quick concise mode'
+  );
+  assert.equal(
+    classifyAdvisorQueryMode('What about rolling the sleeves?', [
+      { id: '1', role: 'user', content: 'Style my shirt', createdAt: '' },
+      { id: '2', role: 'assistant', content: 'Wear it untucked.', createdAt: '' },
+    ]),
+    'quick',
+    'Short follow-up tweak should route to quick concise mode'
+  );
+  assert.equal(
+    classifyAdvisorQueryMode('What should I wear to dinner tonight from my closet?'),
+    'standard'
+  );
+  assert.equal(
+    classifyAdvisorQueryMode('Should I buy this?', [], true, 1),
+    'standard'
+  );
+  assert.equal(
+    classifyAdvisorQueryMode('Compare these options', [], true, 3),
+    'deep'
+  );
+  assert.equal(
+    classifyAdvisorQueryMode('Audit my entire wardrobe color balance and build a 3-day packing capsule'),
+    'deep'
+  );
+});
+
+test('partitionAdvisorHistory enforces sliding context window and triggers incremental rolling memory summarization on overflow', () => {
+  const longHistory: AdvisorMessage[] = Array.from({ length: 10 }, (_, idx) => ({
+    id: `msg_${idx + 1}`,
+    role: idx % 2 === 0 ? 'user' : 'assistant',
+    content:
+      idx % 2 === 0
+        ? `User turn ${idx + 1}: I prefer relaxed fits, dislike bright orange, and need looks for my Tokyo trip.`
+        : `Advisor turn ${idx + 1}: Suggested [[item:base_1|Ivory Cotton Oxford Shirt 1]] with tailored trousers.`,
+    createdAt: `2026-11-27T10:${String(idx).padStart(2, '0')}:00Z`,
+  }));
+
+  const firstPass = partitionAdvisorHistory(longHistory, {
+    maxRecentMessages: 6,
+    maxRecentChars: 2400,
+  });
+  assert.equal(firstPass.recentMessages.length, 6);
+  assert.equal(firstPass.olderMessages.length, 4);
+  assert.equal(firstPass.needsSummarization, true);
+  assert.equal(firstPass.newlyEvictedMessages.length, 4);
+
+  const summary = buildDeterministicFallbackSummary('', firstPass.newlyEvictedMessages);
+  assert.ok(summary.includes('Tokyo trip'), 'Fallback summary must retain durable user facts');
+  assert.ok(!summary.includes('[[item:'), 'Summary must strip raw item syntax');
+  assert.ok(summary.length <= 720, 'Summary must stay compact');
+
+  // Re-running with existingSummary + summarizedCount=4 should NOT re-summarize
+  const secondPass = partitionAdvisorHistory(longHistory, {
+    maxRecentMessages: 6,
+    maxRecentChars: 2400,
+    existingSummary: summary,
+    summarizedCount: 4,
+  });
+  assert.equal(secondPass.needsSummarization, false);
+  assert.equal(secondPass.newlyEvictedMessages.length, 0);
+});
+
+test('quick reply mode trims catalog tokens significantly and sanitizeStreamingMarkdown hides partial tags', () => {
+  const closet = make44ItemCloset();
+  const quickCtx = buildAdvisorWardrobeContext(
+    closet,
+    [],
+    'Can I wear Espresso Leather Loafers 1 with navy chinos?',
+    sampleProfile
+  );
+  const deepCtx = buildAdvisorWardrobeContext(
+    closet,
+    [],
+    'Audit my entire wardrobe and give me 3 fresh outfits',
+    sampleProfile
+  );
+
+  assert.equal(quickCtx.replyMode, 'quick');
+  assert.equal(deepCtx.replyMode, 'deep');
+  assert.ok(
+    quickCtx.categorizedCatalog.length < deepCtx.categorizedCatalog.length * 0.75,
+    'Quick mode should meaningfully reduce prompt catalog size to save tokens'
+  );
+  assert.ok(
+    quickCtx.categorizedCatalog.includes('shoe_1|'),
+    'Explicitly asked item must remain present in lean quick-mode catalog'
+  );
+
+  assert.equal(
+    sanitizeStreamingMarkdown('Pair it with [[item:base_1|Ivory Cotton'),
+    'Pair it with Ivory Cotton'
+  );
+  assert.equal(
+    sanitizeStreamingMarkdown('Pair it with [[item:base_1'),
+    'Pair it with '
+  );
+  assert.equal(
+    sanitizeStreamingMarkdown('Pair it with [[item:base_1|Ivory Shirt]] now.'),
+    'Pair it with [[item:base_1|Ivory Shirt]] now.'
+  );
+});
+
 
 

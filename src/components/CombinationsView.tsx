@@ -45,6 +45,7 @@ interface CombinationsViewProps {
   onSaveCombination: (combo: OutfitCombination) => Promise<void>;
   onCustomizeInStudio: (combo: OutfitCombination) => void;
   onDiscussWithAdvisor: (prompt: string) => void;
+  onInspectGarment: (garment: Garment) => void;
 }
 
 const OCCASIONS: OccasionType[] = [
@@ -76,6 +77,7 @@ export function CombinationsView({
   onSaveCombination,
   onCustomizeInStudio,
   onDiscussWithAdvisor,
+  onInspectGarment,
 }: CombinationsViewProps) {
   const [occasion, setOccasion] = useState<OccasionType>('Smart Casual');
   const [season, setSeason] = useState<SeasonTag>('All-Season');
@@ -364,23 +366,26 @@ export function CombinationsView({
                     }`}
                   >
                     {pieces.slice(0, 6).map((piece) => (
-                      <div
+                      <button
                         key={piece.id}
-                        className="rounded-2xl overflow-hidden bg-white border border-black/[0.05] flex flex-col"
+                        type="button"
+                        onClick={() => onInspectGarment(piece)}
+                        title={`Inspect ${piece.name}`}
+                        className="group text-left rounded-2xl overflow-hidden bg-white border border-black/[0.05] hover:border-black/[0.2] transition-colors flex flex-col cursor-pointer"
                       >
                         <div className="relative aspect-[4/4] w-full bg-[#F5F5F7] overflow-hidden">
                           <SmartImage
                             src={piece.imageUrl}
                             alt={piece.name}
                             swatchHex={piece.colorHex}
-                            className="w-full h-full object-cover"
+                            className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
                           />
                           <span className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-white/90 backdrop-blur-xs text-[10px] font-semibold text-[#1D1D1F] border border-black/[0.06]">
                             {formatLayerRoleLabel(piece)}
                           </span>
                         </div>
-                        <div className="px-3 py-2 flex items-center justify-between gap-2">
-                          <span className="text-[12px] font-medium text-[#1D1D1F] truncate">
+                        <div className="px-3 py-2 flex items-center justify-between gap-2 w-full">
+                          <span className="text-[12px] font-medium text-[#1D1D1F] group-hover:text-[#0071E3] truncate transition-colors">
                             {piece.name}
                           </span>
                           <span
@@ -389,7 +394,7 @@ export function CombinationsView({
                             aria-hidden="true"
                           />
                         </div>
-                      </div>
+                      </button>
                     ))}
                   </div>
 

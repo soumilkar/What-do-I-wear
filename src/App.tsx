@@ -5,7 +5,11 @@
 
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import { useCallback, useEffect, useState } from 'react';
-import { type AdvisorAttachedImage, AdvisorView } from './components/AdvisorView';
+import {
+  type AdvisorAttachedImage,
+  type AdvisorSendCallbacks,
+  AdvisorView,
+} from './components/AdvisorView';
 import { AuthScreen } from './components/AuthScreen';
 import {
   type AnalyzedCloudGarmentEntry,
@@ -35,7 +39,7 @@ import {
   updateProfileInCloud,
   updateProfilePhotoInCloud,
 } from './lib/cloudWardrobe';
-import { apiJson } from './lib/apiClient';
+import { apiJson, streamSsePost } from './lib/apiClient';
 import {
   auth,
   reloadAndRefreshUser,
@@ -91,6 +95,10 @@ export default function App() {
   const [anchorForCombos, setAnchorForCombos] = useState<string>('');
   const [studioDraft, setStudioDraft] = useState<OutfitCombination | null>(null);
   const [advisorPrefill, setAdvisorPrefill] = useState<string>('');
+  const [advisorMemory, setAdvisorMemory] = useState<{ summary: string; summarizedCount: number }>({
+    summary: '',
+    summarizedCount: 0,
+  });
   const [toast, setToast] = useState<string | null>(null);
 
   const [emailVerifiedFlag, setEmailVerifiedFlag] = useState(false);
@@ -120,6 +128,25 @@ export default function App() {
         setInspectedGarmentId(null);
         setUploadOpen(false);
         setVerifyNotice(null);
+        setAdvisorMemory({ summary: '', summarizedCount: 0 });
+      } else {
+        try {
+          const raw = window.localStorage.getItem(`wdiw_advisor_memory_${nextUser.uid}`);
+          if (raw) {
+            const parsed = JSON.parse(raw) as { summary?: string; summarizedCount?: number };
+            setAdvisorMemory({
+              summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+              summarizedCount:
+                typeof parsed.summarizedCount === 'number' && Number.isFinite(parsed.summarizedCount)
+                  ? parsed.summarizedCount
+                  : 0,
+            });
+          } else {
+            setAdvisorMemory({ summary: '', summarizedCount: 0 });
+          }
+        } catch {
+          setAdvisorMemory({ summary: '', summarizedCount: 0 });
+        }
       }
     });
     return unsub;
@@ -512,9 +539,24 @@ export default function App() {
     }
   };
 
+  const persistAdvisorMemory = (next: { summary: string; summarizedCount: number }) => {
+    setAdvisorMemory(next);
+    try {
+      const key = `wdiw_advisor_memory_${user.uid}`;
+      if (next.summary) {
+        window.localStorage.setItem(key, JSON.stringify(next));
+      } else {
+        window.localStorage.removeItem(key);
+      }
+    } catch {
+      // Ignore storage quota restrictions
+    }
+  };
+
   const handleSendAdvisorMessage = async (
     message: string,
-    images?: AdvisorAttachedImage[]
+    images: AdvisorAttachedImage[] | undefined,
+    callbacks: AdvisorSendCallbacks
   ) => {
     if (!data) return;
     const safeImages = Array.isArray(images) ? images.slice(0, 4) : [];
@@ -527,27 +569,44 @@ export default function App() {
     const strippedHistory = data.advisorMessages.map(({ attachedImages: _imgs, ...rest }) => rest);
     const portraitImage = extractPortraitPayload(data.profile);
 
-    const reply = await apiJson<{
+    const reply = await streamSsePost<{
       content: string;
       referencedItemIds?: string[];
       sources?: GroundingSource[];
       modelUsed?: string;
-    }>('/api/ai/advisor-chat', {
-      method: 'POST',
-      body: JSON.stringify({
+      memorySummary?: string;
+      summarizedCount?: number;
+    }>(
+      '/api/ai/advisor-chat-stream',
+      {
         message: effectiveMessage,
         history: strippedHistory,
         garments: stripGarmentImages(data.garments),
         savedOutfits: data.savedOutfits,
         profile: stripProfilePhoto(data.profile),
         portraitImage,
+        memorySummary: advisorMemory.summary,
+        summarizedCount: advisorMemory.summarizedCount,
         images: safeImages.map((img, idx) => ({
           base64: img.base64,
           mimeType: img.mimeType,
           label: img.label || `Option ${idx + 1}`,
         })),
-      }),
-    });
+      },
+      {
+        onDelta: callbacks.onDelta,
+        onStatus: callbacks.onStatus,
+        signal: callbacks.signal,
+      }
+    );
+
+    if (typeof reply.memorySummary === 'string') {
+      persistAdvisorMemory({
+        summary: reply.memorySummary,
+        summarizedCount:
+          typeof reply.summarizedCount === 'number' ? reply.summarizedCount : advisorMemory.summarizedCount,
+      });
+    }
 
     await addAdvisorTurnToCloud(
       user.uid,
@@ -565,6 +624,7 @@ export default function App() {
       data.profile.name,
       data.garments.length
     );
+    persistAdvisorMemory({ summary: '', summarizedCount: 0 });
     showToast('Started a fresh advisor thread.');
   };
 
@@ -617,6 +677,10 @@ export default function App() {
                 onSelectGarment={(g) => setInspectedGarmentId(g.id)}
                 onOpenUpload={() => setUploadOpen(true)}
                 onGoToCombinations={() => setActiveTab('combinations')}
+                onAskAdvisor={(prompt) => {
+                  if (prompt) setAdvisorPrefill(prompt);
+                  setActiveTab('advisor');
+                }}
               />
             )}
 
@@ -637,6 +701,7 @@ export default function App() {
                   setAdvisorPrefill(prompt);
                   setActiveTab('advisor');
                 }}
+                onInspectGarment={(g) => setInspectedGarmentId(g.id)}
               />
             )}
 
@@ -662,11 +727,33 @@ export default function App() {
                 savedOutfits={data.savedOutfits}
                 profile={data.profile}
                 wardrobeGaps={data.wardrobeGaps}
+                memorySummary={advisorMemory.summary}
+                summarizedCount={advisorMemory.summarizedCount}
                 prefillPrompt={advisorPrefill}
                 onClearPrefill={() => setAdvisorPrefill('')}
                 onSendMessage={handleSendAdvisorMessage}
                 onClearHistory={handleClearAdvisorHistory}
                 onInspectGarment={(g) => setInspectedGarmentId(g.id)}
+                onTryItemsInStudio={(itemIds, title) => {
+                  setStudioDraft({
+                    id: `advisor_draft_${Date.now()}`,
+                    title: title || 'Advisor Styled Look',
+                    source: 'ai',
+                    score: 88,
+                    vectorHarmonyScore: 85,
+                    itemIds,
+                    occasion: 'Smart Casual',
+                    season: 'All-Season',
+                    rationale: 'Loaded directly from your AI Styling Advisor recommendation.',
+                    fabricFitNotes: '',
+                    bodyTailoringNote: '',
+                    finishingTouch: '',
+                    wearCount: 0,
+                    saved: false,
+                    createdAt: new Date().toISOString(),
+                  });
+                  setActiveTab('studio');
+                }}
               />
             )}
 

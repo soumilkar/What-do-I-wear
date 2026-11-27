@@ -7,15 +7,19 @@ import type {
   UserProfile,
 } from '../types/styling.ts';
 import {
+  buildCrossVerifiedStylingGuidance,
   classifyTopLayerRole,
   computeDeterministicVector,
   evaluateBaseUnderMidCompatibility,
+  findBestCompanions,
   generateCandidateCombinations,
   inferEffectiveSeason,
   isSummerUnsuitable,
   isWinterUnsuitable,
   scoreGarmentForPerson,
 } from './styleEngine.ts';
+
+export type AdvisorReplyMode = 'quick' | 'standard' | 'deep';
 
 export interface AdvisorIntent {
   needsWebSearch: boolean;
@@ -24,8 +28,19 @@ export interface AdvisorIntent {
   inferredOccasion: OccasionType;
 }
 
+export interface AdvisorHistoryWindow {
+  recentMessages: AdvisorMessage[];
+  olderMessages: AdvisorMessage[];
+  newlyEvictedMessages: AdvisorMessage[];
+  needsSummarization: boolean;
+  totalHistoryChars: number;
+  recentChars: number;
+  recentFormatted: string;
+}
+
 export interface AdvisorWardrobeContext {
   intent: AdvisorIntent;
+  replyMode: AdvisorReplyMode;
   effectiveSeason: SeasonTag;
   spotlightIds: string[];
   recentlyMentionedIds: string[];
@@ -186,6 +201,179 @@ export function extractExplicitlyAskedIds(
     }
   }
   return asked;
+}
+
+/**
+ * Classifies how concise or comprehensive the Advisor's answer should be so we save tokens
+ * and latency when a direct, punchy answer is all the user needs.
+ */
+export function classifyAdvisorQueryMode(
+  userMessage: string,
+  history: AdvisorMessage[] = [],
+  hasAttachedImages = false,
+  imageCount = 0
+): AdvisorReplyMode {
+  const clean = userMessage.trim();
+  const lower = clean.toLowerCase();
+
+  // Deep mode: multi-photo comparison, full-closet/wardrobe audits, capsule/packing plans, or multi-outfit requests
+  if (hasAttachedImages && imageCount >= 2) return 'deep';
+  if (
+    /\b(audit|full closet|entire wardrobe|capsule|pack|packing|week of outfits|3[\s-]?day|5[\s-]?day|7[\s-]?day|compare|versus|\bvs\.?\b|deep dive|trends? (?:for|that)|2025|2026|2027|detailed|thorough|everything i own|wardrobe gaps|rank my)\b/.test(
+      lower
+    )
+  ) {
+    return 'deep';
+  }
+  if (/\b(3|4|5|three|four|five|several|multiple)\s+(fresh\s+|flattering\s+|different\s+)?(outfits?|looks?|combos?|combinations?)\b/.test(lower)) {
+    return 'deep';
+  }
+
+  // Standard mode: single uploaded shopping photo or explicit full outfit / shopping advice request
+  if (hasAttachedImages) return 'standard';
+  if (
+    /\b(build|create|put together|plan|style me|what should i wear|outfit for|outfits for|look for|recommend .+ to buy|what should i buy|high[\s-]?roi|multiplier)\b/.test(
+      lower
+    )
+  ) {
+    return 'standard';
+  }
+
+  // Quick mode: crisp, direct questions, yes/no checks, color/shoe/swap tweaks, or short follow-ups
+  const isShort = clean.length <= 150;
+  const isDirectQuestion =
+    /^(can i|should i|do |does |will |would |is |are |what color|which color|which shoe|what shoes|how about|what about|swap|instead|yes or no|quick question|does this|do these|better with|ok with|okay with|good with|tuck|untuck|roll|cuff)/i.test(
+      clean
+    ) ||
+    (isShort &&
+      history.length >= 2 &&
+      !/\b(outfit|outfits|capsule|audit|pack|compare|trend|wardrobe)\b/.test(lower));
+
+  if (isShort && isDirectQuestion) return 'quick';
+  if (clean.length <= 65 && !/\b(outfit|outfits|buy|shop|audit|trend|compare)\b/.test(lower)) {
+    return 'quick';
+  }
+
+  return 'standard';
+}
+
+/**
+ * Splits chat history into an active verbatim sliding context window + older evicted turns
+ * that should be compressed into a rolling conversation memory summary.
+ */
+export function partitionAdvisorHistory(
+  history: AdvisorMessage[],
+  options?: {
+    maxRecentMessages?: number;
+    maxRecentChars?: number;
+    existingSummary?: string;
+    summarizedCount?: number;
+  }
+): AdvisorHistoryWindow {
+  const maxRecentMessages = Math.max(2, options?.maxRecentMessages ?? 6);
+  const maxRecentChars = Math.max(600, options?.maxRecentChars ?? 2400);
+  const existingSummary = (options?.existingSummary ?? '').trim();
+  const prevSummarizedCount = Math.max(0, options?.summarizedCount ?? 0);
+
+  // Exclude synthetic welcome greeting from summarization noise if present at index 0
+  const meaningful = history.filter((m) => Boolean((m.content || '').trim()));
+  const totalHistoryChars = meaningful.reduce((sum, m) => sum + (m.content || '').length, 0);
+
+  // Walk backwards from most recent message to pack the active verbatim context window
+  const recentReversed: AdvisorMessage[] = [];
+  let recentChars = 0;
+
+  for (let i = meaningful.length - 1; i >= 0; i--) {
+    const msg = meaningful[i];
+    const msgLen = (msg.content || '').length;
+    const mustKeep = recentReversed.length < 2; // Always keep at least the latest exchange verbatim
+    if (
+      !mustKeep &&
+      (recentReversed.length >= maxRecentMessages || recentChars + msgLen > maxRecentChars)
+    ) {
+      break;
+    }
+    recentReversed.push(msg);
+    recentChars += msgLen;
+  }
+
+  const recentMessages = recentReversed.reverse();
+  const splitIndex = Math.max(0, meaningful.length - recentMessages.length);
+  const olderMessages = meaningful.slice(0, splitIndex);
+
+  // Only summarize newly evicted turns beyond what's already captured in existingSummary
+  const effectivePrevCount = existingSummary
+    ? Math.min(prevSummarizedCount, olderMessages.length)
+    : 0;
+  const newlyEvictedMessages = olderMessages.slice(effectivePrevCount);
+  const needsSummarization =
+    olderMessages.length > 0 && (newlyEvictedMessages.length > 0 || !existingSummary);
+
+  const recentFormatted = formatCompactHistoryForAdvisor(recentMessages);
+
+  return {
+    recentMessages,
+    olderMessages,
+    newlyEvictedMessages,
+    needsSummarization,
+    totalHistoryChars,
+    recentChars,
+    recentFormatted,
+  };
+}
+
+/**
+ * Deterministic extractive fallback summary used if LLM memory compression is skipped or rate-limited.
+ * Captures user goals, preferences, events, dislikes, and key pieces discussed within <= 700 chars.
+ */
+export function buildDeterministicFallbackSummary(
+  existingSummary: string,
+  newlyEvictedTurns: AdvisorMessage[]
+): string {
+  const lines: string[] = [];
+  if (existingSummary.trim()) {
+    lines.push(existingSummary.trim());
+  }
+
+  for (const turn of newlyEvictedTurns) {
+    const cleaned = (turn.content || '')
+      .replace(/\[\[(?:item|garment):[a-zA-Z0-9_-]+\|([^\]]+)\]\]/g, '$1')
+      .replace(/[#*_`]+/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!cleaned) continue;
+
+    if (turn.role === 'user') {
+      lines.push(`- User asked/noted: ${cleaned.slice(0, 140)}`);
+    } else {
+      const firstSentence = cleaned.split(/(?<=[.!?])\s+/)[0] || cleaned;
+      lines.push(`- Advisor advised: ${firstSentence.slice(0, 120)}`);
+    }
+  }
+
+  // Keep only the most recent compact memory lines within ~720 chars
+  const deduped = Array.from(new Set(lines));
+  let result = deduped.slice(-7).join('\n');
+  if (result.length > 720) {
+    result = result.slice(result.length - 720).replace(/^[^\n]*\n/, '');
+  }
+  return result.trim();
+}
+
+/**
+ * Sanitizes partially streamed markdown so users never see broken raw [[item:id|... syntax
+ * while tokens are still arriving word-by-word.
+ */
+export function sanitizeStreamingMarkdown(rawText: string): string {
+  if (!rawText) return '';
+  // If the trailing edge has an incomplete [[item:id|Partial Name tag, show only the readable label (or hide raw id)
+  return rawText.replace(/\[\[(?:item|garment):[^\]\n]*$/i, (tail) => {
+    const pipeIdx = tail.indexOf('|');
+    if (pipeIdx !== -1) {
+      return tail.slice(pipeIdx + 1);
+    }
+    return '';
+  });
 }
 
 /**
@@ -400,9 +588,18 @@ export function buildAdvisorWardrobeContext(
   history: AdvisorMessage[],
   userMessage: string,
   profile: UserProfile,
-  hasAttachedImages = false
+  hasAttachedImages = false,
+  options?: { replyMode?: AdvisorReplyMode; imageCount?: number }
 ): AdvisorWardrobeContext {
   const intent = detectAdvisorIntent(userMessage, hasAttachedImages);
+  const replyMode =
+    options?.replyMode ??
+    classifyAdvisorQueryMode(
+      userMessage,
+      history,
+      hasAttachedImages,
+      options?.imageCount ?? (hasAttachedImages ? 1 : 0)
+    );
   const effectiveSeason = inferEffectiveSeason('All-Season', userMessage);
   const recentMap = extractRecentlyMentionedIds(history, garments);
   const explicitlyAsked = extractExplicitlyAskedIds(userMessage, garments);
@@ -484,14 +681,17 @@ export function buildAdvisorWardrobeContext(
   const recentlyMentionedIds = cooldownEntries.map((c) => c.garment.id);
   const unexploredCount = garments.length - cooldownEntries.length;
 
-  // Pre-compute 4 mathematically verified, multi-layer, OKLCH-checked, anti-repetition outfit blueprints
-  // so the Advisor reasons like a senior stylist instead of grabbing random lines from the top of the list!
-  let verifiedBlueprintsSection = 'Not applicable (insufficient tops/bottoms for full outfits).';
-  if (garments.length >= 2) {
-    const vectors: Record<string, number[]> = {};
-    for (const g of garments) {
-      vectors[g.id] = computeDeterministicVector(g);
-    }
+  // Pre-compute mathematically verified, multi-layer, OKLCH-checked, anti-repetition outfit blueprints
+  // Save tokens in 'quick' mode by computing fewer blueprints unless outfits are requested
+  let verifiedBlueprintsSection = 'Not needed for this quick question.';
+  const vectors: Record<string, number[]> = {};
+  for (const g of garments) {
+    vectors[g.id] = computeDeterministicVector(g);
+  }
+  const shouldBuildBlueprints =
+    garments.length >= 2 && (replyMode !== 'quick' || intent.wantsOutfits || explicitlyAsked.size > 0);
+
+  if (shouldBuildBlueprints) {
     const syntheticPrevious: OutfitCombination[] =
       recentlyMentionedIds.length > 0
         ? [
@@ -525,7 +725,7 @@ export function buildAdvisorWardrobeContext(
       previousCombinations: syntheticPrevious,
       explorationMode: 'fresh',
       rotationSeed: stableHash(turnSeed),
-      maxCandidates: 4,
+      maxCandidates: replyMode === 'quick' ? 2 : 4,
     });
 
     if (blueprints.length > 0) {
@@ -545,6 +745,8 @@ export function buildAdvisorWardrobeContext(
           return `Blueprint ${i + 1} [Score ${bp.localScore} · Personal ${bp.personalScore}% · Color ${bp.colorScore}% (${bp.paletteSummary}) · Proportion ${bp.proportionScore}%]: ${stack}`;
         })
         .join('\n');
+    } else {
+      verifiedBlueprintsSection = 'Not applicable (insufficient tops/bottoms for full outfits).';
     }
   }
 
@@ -638,6 +840,27 @@ export function buildAdvisorWardrobeContext(
     }
   }
 
+  // Cross-verify explicitly asked garments against deterministic pairing engine so Advisor & GarmentInspector stay 100% consistent
+  if (explicitlyAsked.size > 0 && garments.length >= 2) {
+    const askedList = garments.filter((g) => explicitlyAsked.has(g.id)).slice(0, 2);
+    for (const target of askedList) {
+      const topCompanions = findBestCompanions(target.id, garments, vectors, 3, profile);
+      const guidance = buildCrossVerifiedStylingGuidance(target, topCompanions, garments);
+      if (topCompanions.length > 0) {
+        const companionSummary = topCompanions
+          .map((c) => {
+            const match = garments.find((g) => g.id === c.garmentId);
+            return match ? `[[item:${match.id}|${match.name}]] (${c.score}% match)` : null;
+          })
+          .filter((x): x is string => Boolean(x))
+          .join(', ');
+        layeringLines.push(
+          `CROSS-VERIFIED BEST PAIRINGS FOR [[item:${target.id}|${target.name}]]: ${companionSummary}. Guide: ${guidance.primaryGuidance}`
+        );
+      }
+    }
+  }
+
   const layeringGuideSection =
     layeringLines.length > 0
       ? layeringLines.join('\n')
@@ -656,11 +879,17 @@ export function buildAdvisorWardrobeContext(
           .join('; ')
       : 'None yet — full closet is fresh.';
 
+  // In 'quick' mode, cap each category to top query-relevant items to drastically cut prompt tokens
+  // while keeping EVERY asked item + fresh top matches grounded. Full catalog is sent in 'standard' & 'deep'.
+  const bucketLimit = replyMode === 'quick' ? 5 : 120;
   const formatBucket = (title: string, list: typeof scored) => {
     if (list.length === 0) return null;
-    return `[${title} — ${list.length} items, ordered freshest & most relevant first]\n${list
+    const shown = list.slice(0, bucketLimit);
+    const omitted = list.length - shown.length;
+    const suffix = omitted > 0 ? `\n(+${omitted} more items omitted for brevity)` : '';
+    return `[${title} — ${list.length} items, ordered freshest & most relevant first]\n${shown
       .map((s) => formatCompactLine(s.garment, s.isCooldown))
-      .join('\n')}`;
+      .join('\n')}${suffix}`;
   };
 
   const categorizedCatalog = [
@@ -676,6 +905,7 @@ export function buildAdvisorWardrobeContext(
 
   return {
     intent,
+    replyMode,
     effectiveSeason,
     spotlightIds,
     recentlyMentionedIds,

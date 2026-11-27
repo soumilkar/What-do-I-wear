@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { apiJson, extractApiErrorMessage } from './apiClient';
+import { apiJson, extractApiErrorMessage, streamSsePost } from './apiClient';
 
 test('extractApiErrorMessage handles string errors, nested Vercel error objects, and fallback messages safely', () => {
   assert.equal(extractApiErrorMessage({ error: '  Bad image format  ' }), 'Bad image format');
@@ -91,6 +91,76 @@ test('apiJson handles object-shaped error responses without throwing trim TypeEr
     );
     assert.equal(result.ok, true);
     assert.equal(calls, 2, 'Expected exactly 1 retry after transient HTTP 504');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('streamSsePost parses split SSE delta/status/done frames incrementally and surfaces mid-stream errors', async () => {
+  const originalFetch = globalThis.fetch;
+  const encoder = new TextEncoder();
+
+  try {
+    // Case 1: Chunked SSE stream with split frames
+    globalThis.fetch = (async () => {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('event: status\ndata: {"phase":"memory"}\n\n'));
+          controller.enqueue(encoder.encode('event: delta\ndata: {"text":"Yes, pair "}\n'));
+          controller.enqueue(encoder.encode('\nevent: delta\ndata: {"text":"navy chinos."}\n\n'));
+          controller.enqueue(
+            encoder.encode(
+              'event: done\ndata: {"content":"Yes, pair navy chinos.","referencedItemIds":["bot_1"],"memorySummary":"- Prefers loafers","summarizedCount":4}\n\n'
+            )
+          );
+          controller.close();
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+      });
+    }) as typeof fetch;
+
+    const deltas: string[] = [];
+    const statuses: string[] = [];
+    const done = await streamSsePost<{
+      content: string;
+      referencedItemIds: string[];
+      memorySummary: string;
+      summarizedCount: number;
+    }>(
+      '/api/ai/advisor-chat-stream',
+      { message: 'test' },
+      {
+        onDelta: (t) => deltas.push(t),
+        onStatus: (p) => statuses.push(p),
+      }
+    );
+
+    assert.deepEqual(statuses, ['memory']);
+    assert.deepEqual(deltas, ['Yes, pair ', 'navy chinos.']);
+    assert.equal(done.content, 'Yes, pair navy chinos.');
+    assert.equal(done.summarizedCount, 4);
+
+    // Case 2: Mid-stream SSE error event
+    globalThis.fetch = (async () => {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('event: error\ndata: {"error":"Upstream overloaded"}\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as typeof fetch;
+
+    await assert.rejects(
+      () => streamSsePost('/api/ai/advisor-chat-stream', { message: 'test' }),
+      /Upstream overloaded/
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -1,7 +1,16 @@
 import { useMemo, useState } from 'react';
-import { ArrowUpRight, Search, Upload } from 'lucide-react';
-import type { CompanionMatch, Garment, GarmentCategory, UserProfile } from '../types/styling';
-import { scoreGarmentForPerson } from '../utils/styleEngine';
+import { ArrowUpRight, MessageSquare, Search, Upload } from 'lucide-react';
+import type {
+  CompanionMatch,
+  Garment,
+  GarmentCategory,
+  SeasonTag,
+  UserProfile,
+} from '../types/styling';
+import {
+  computeWardrobeIntelligenceSummary,
+  scoreGarmentForPerson,
+} from '../utils/styleEngine';
 import { SmartImage } from './SmartImage';
 
 interface WardrobeViewProps {
@@ -13,6 +22,7 @@ interface WardrobeViewProps {
   onSelectGarment: (garment: Garment) => void;
   onOpenUpload: () => void;
   onGoToCombinations: () => void;
+  onAskAdvisor: (prompt?: string) => void;
 }
 
 const CATEGORY_TABS: Array<{ id: 'all' | GarmentCategory; label: string }> = [
@@ -33,8 +43,10 @@ export function WardrobeView({
   onSelectGarment,
   onOpenUpload,
   onGoToCombinations,
+  onAskAdvisor,
 }: WardrobeViewProps) {
   const [category, setCategory] = useState<'all' | GarmentCategory>('all');
+  const [seasonFilter, setSeasonFilter] = useState<'all' | 'unworn' | SeasonTag>('all');
   const [query, setQuery] = useState('');
   const [sortBy, setSortBy] = useState<'newest' | 'flattery' | 'formality' | 'worn'>('newest');
 
@@ -46,10 +58,24 @@ export function WardrobeView({
     return map;
   }, [garments, profile]);
 
+  const wardrobeDna = useMemo(
+    () => computeWardrobeIntelligenceSummary(garments, [], profile),
+    [garments, profile]
+  );
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = garments.filter((item) => {
       if (category !== 'all' && item.category !== category) return false;
+      if (seasonFilter === 'unworn' && item.wearCount > 0) return false;
+      if (
+        seasonFilter !== 'all' &&
+        seasonFilter !== 'unworn' &&
+        !item.seasons.includes(seasonFilter) &&
+        !item.seasons.includes('All-Season')
+      ) {
+        return false;
+      }
       if (!q) return true;
       return (
         item.name.toLowerCase().includes(q) ||
@@ -72,7 +98,7 @@ export function WardrobeView({
       return [...list].sort((a, b) => b.wearCount - a.wearCount);
     }
     return list;
-  }, [garments, category, query, sortBy, personalScores]);
+  }, [garments, category, seasonFilter, query, sortBy, personalScores]);
 
   const unwornCount = garments.filter((g) => g.wearCount === 0).length;
 
@@ -129,6 +155,47 @@ export function WardrobeView({
         </div>
       </section>
 
+      {/* Clean Unboxed Palette & Advisor Intelligence Strip */}
+      {garments.length > 0 && wardrobeDna.dominantSwatches.length > 0 && (
+        <section
+          aria-label="Closet color palette summary"
+          className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 -mt-4 pb-2 border-b border-black/[0.06]"
+        >
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-[#6E6E73]">
+            <span className="font-medium text-[#1D1D1F]">Closet Palette</span>
+            <div className="flex items-center gap-1.5">
+              {wardrobeDna.dominantSwatches.map((sw) => (
+                <span
+                  key={sw.color}
+                  className="w-4 h-4 rounded-full border border-black/15"
+                  style={{ backgroundColor: sw.hex }}
+                  title={`${sw.color} (${sw.count})`}
+                />
+              ))}
+            </div>
+            <span className="tabular-nums">
+              {wardrobeDna.blueprintAlignmentAvg}% palette match
+              {profile.blueprint?.colorSeason ? ` · ${profile.blueprint.colorSeason}` : ''}
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={() =>
+              onAskAdvisor(
+                unwornCount >= 3
+                  ? `Give me 2 fresh outfits using my unworn pieces and tell me the #1 gap in my closet.`
+                  : 'Audit my wardrobe color balance and tell me what single piece would unlock the most outfits.'
+              )
+            }
+            className="inline-flex items-center gap-1.5 text-[13px] font-medium text-[#0071E3] hover:underline whitespace-nowrap shrink-0 self-start sm:self-auto"
+          >
+            <MessageSquare className="w-3.5 h-3.5" aria-hidden="true" />
+            Ask Advisor about my closet
+          </button>
+        </section>
+      )}
+
       {/* Filter & Search Toolbar */}
       <section className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div
@@ -164,8 +231,8 @@ export function WardrobeView({
           })}
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="relative flex-1 sm:w-64">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="relative flex-1 min-w-[180px] sm:w-56">
             <Search
               className="w-4 h-4 text-[#86868B] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none"
               aria-hidden="true"
@@ -183,6 +250,25 @@ export function WardrobeView({
             />
           </div>
 
+          <label htmlFor="wardrobe-season" className="sr-only">
+            Filter by season or wear status
+          </label>
+          <select
+            id="wardrobe-season"
+            value={seasonFilter}
+            onChange={(e) =>
+              setSeasonFilter(e.target.value as 'all' | 'unworn' | SeasonTag)
+            }
+            className="px-3 py-2 bg-white border border-black/[0.08] rounded-xl text-[13px] font-medium text-[#1D1D1F] focus:border-[#0071E3] focus:outline-none"
+          >
+            <option value="all">All Seasons</option>
+            <option value="Summer">Summer</option>
+            <option value="Spring">Spring</option>
+            <option value="Autumn">Autumn</option>
+            <option value="Winter">Winter</option>
+            <option value="unworn">Unworn Only ({unwornCount})</option>
+          </select>
+
           <label htmlFor="wardrobe-sort" className="sr-only">
             Sort garments
           </label>
@@ -192,7 +278,7 @@ export function WardrobeView({
             onChange={(e) =>
               setSortBy(e.target.value as 'newest' | 'flattery' | 'formality' | 'worn')
             }
-            className="px-3.5 py-2 bg-white border border-black/[0.08] rounded-xl text-[13px] font-medium text-[#1D1D1F] focus:border-[#0071E3] focus:outline-none"
+            className="px-3 py-2 bg-white border border-black/[0.08] rounded-xl text-[13px] font-medium text-[#1D1D1F] focus:border-[#0071E3] focus:outline-none"
           >
             <option value="newest">Recently Added</option>
             <option value="flattery">Best for Me</option>
@@ -222,6 +308,7 @@ export function WardrobeView({
                 type="button"
                 onClick={() => {
                   setCategory('all');
+                  setSeasonFilter('all');
                   setQuery('');
                 }}
                 className="px-4 py-2 rounded-full border border-black/[0.12] text-[13px] font-medium text-[#1D1D1F] hover:bg-black/[0.03]"

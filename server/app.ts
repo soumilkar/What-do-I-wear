@@ -10,6 +10,7 @@ import {
   critiqueCustomOutfitWithAI,
   generateGarmentVector,
   rankCombinationsWithAI,
+  streamShoppingAdvisorChat,
 } from './aiRouter.ts';
 import {
   getBootstrapPayload,
@@ -1004,9 +1005,8 @@ export function createApiApp(): express.Express {
     }
   });
 
-  // Stateless Shopping Advisor chat with full compact cloud wardrobe context + optional shopping item photos + user portrait
-  app.post('/api/ai/advisor-chat', async (req, res) => {
-    const body = req.body as {
+  const parseAdvisorRequestBody = (rawBody: unknown) => {
+    const body = (rawBody ?? {}) as {
       message?: string;
       history?: AdvisorMessage[];
       garments?: Garment[];
@@ -1014,6 +1014,8 @@ export function createApiApp(): express.Express {
       profile?: import('../src/types/styling.ts').UserProfile;
       portraitImage?: { base64?: string; mimeType?: string } | null;
       images?: Array<{ base64?: string; mimeType?: string; label?: string }>;
+      memorySummary?: string;
+      summarizedCount?: number;
     };
 
     const rawImages = Array.isArray(body.images) ? body.images.slice(0, 4) : [];
@@ -1029,7 +1031,10 @@ export function createApiApp(): express.Express {
       .map((img, idx) => ({
         base64: img.base64.trim(),
         mimeType: img.mimeType.trim().toLowerCase(),
-        label: typeof img.label === 'string' && img.label.trim() ? img.label.trim().slice(0, 60) : `Option ${idx + 1}`,
+        label:
+          typeof img.label === 'string' && img.label.trim()
+            ? img.label.trim().slice(0, 60)
+            : `Option ${idx + 1}`,
       }));
 
     const text = typeof body.message === 'string' ? body.message.trim() : '';
@@ -1041,28 +1046,103 @@ export function createApiApp(): express.Express {
           ? 'Should I buy this item? Analyze how well it fits my wardrobe, colors, and proportions.'
           : '');
 
-    if (!effectiveQuestion || !body.profile) {
+    const memory = {
+      summary: typeof body.memorySummary === 'string' ? body.memorySummary.slice(0, 1200) : '',
+      summarizedCount:
+        typeof body.summarizedCount === 'number' && Number.isFinite(body.summarizedCount)
+          ? Math.max(0, Math.floor(body.summarizedCount))
+          : 0,
+    };
+
+    return {
+      effectiveQuestion,
+      profile: body.profile,
+      history: Array.isArray(body.history) ? body.history.slice(-40) : [],
+      garments: Array.isArray(body.garments) ? body.garments.slice(0, 120) : [],
+      savedOutfits: Array.isArray(body.savedOutfits) ? body.savedOutfits.slice(0, 20) : [],
+      validImages,
+      portraitImage: body.profile ? extractPortraitImage(body.portraitImage, body.profile.photoUrl) : null,
+      memory,
+    };
+  };
+
+  // Stateless Shopping Advisor chat (JSON response, backward compatible)
+  app.post('/api/ai/advisor-chat', async (req, res) => {
+    const parsed = parseAdvisorRequestBody(req.body);
+    if (!parsed.effectiveQuestion || !parsed.profile) {
       res.status(400).json({ error: 'Enter a question or upload an item photo for your shopping advisor.' });
       return;
     }
 
-    const portraitImage = extractPortraitImage(body.portraitImage, body.profile.photoUrl);
-
     try {
       const reply = await chatWithShoppingAdvisor(
-        effectiveQuestion.slice(0, 1000),
-        Array.isArray(body.history) ? body.history.slice(-16) : [],
-        Array.isArray(body.garments) ? body.garments.slice(0, 120) : [],
-        Array.isArray(body.savedOutfits) ? body.savedOutfits.slice(0, 20) : [],
-        body.profile,
-        validImages,
-        portraitImage
+        parsed.effectiveQuestion.slice(0, 1000),
+        parsed.history,
+        parsed.garments,
+        parsed.savedOutfits,
+        parsed.profile,
+        parsed.validImages,
+        parsed.portraitImage,
+        parsed.memory
       );
       res.json(reply);
     } catch (err) {
       res.status(502).json({
         error: err instanceof Error ? err.message : 'Shopping advisor request failed.',
       });
+    }
+  });
+
+  // Streaming Shopping Advisor chat over Server-Sent Events (SSE) for instant word-by-word display
+  app.post('/api/ai/advisor-chat-stream', async (req, res) => {
+    const parsed = parseAdvisorRequestBody(req.body);
+    if (!parsed.effectiveQuestion || !parsed.profile) {
+      res.status(400).json({ error: 'Enter a question or upload an item photo for your shopping advisor.' });
+      return;
+    }
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    let clientClosed = false;
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        clientClosed = true;
+      }
+    });
+
+    const writeSseEvent = (event: string, data: unknown) => {
+      if (clientClosed || res.writableEnded) return;
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    try {
+      const reply = await streamShoppingAdvisorChat(
+        parsed.effectiveQuestion.slice(0, 1000),
+        parsed.history,
+        parsed.garments,
+        parsed.savedOutfits,
+        parsed.profile,
+        parsed.validImages,
+        parsed.portraitImage,
+        parsed.memory,
+        {
+          onStatus: (phase) => writeSseEvent('status', { phase }),
+          onDelta: (text) => writeSseEvent('delta', { text }),
+        }
+      );
+
+      writeSseEvent('done', reply);
+      if (!res.writableEnded) res.end();
+    } catch (err) {
+      writeSseEvent('error', {
+        error: err instanceof Error ? err.message : 'Shopping advisor stream failed.',
+      });
+      if (!res.writableEnded) res.end();
     }
   });
 
