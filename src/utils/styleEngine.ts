@@ -414,10 +414,10 @@ const MATERIAL_PAIR_DELTA: Partial<Record<FabricFamily, Partial<Record<FabricFam
 // ============================================================================
 
 const MID_LAYER_REGEX =
-  /\b(sweater|pullover|cardigan|knitwear|knit\s*(top|crew|v-?neck|vest|jumper)?|jumper|hoodie|sweatshirt|quarter[- ]?zip|half[- ]?zip|sweater[- ]?vest|knit[- ]?vest|gilet|fleece|shrug|poncho|crewneck\s*knit|cable[- ]?knit)\b/i;
+  /\b(sweater|pullover|cardigan|knitwear|knit\s+(sweater|crew(neck)?|v-?neck|vest|jumper|cardigan|pullover|half[- ]?zip|quarter[- ]?zip)|chunky\s*knit|cable[- ]?knit|jumper|hoodie|sweatshirt|quarter[- ]?zip|half[- ]?zip|sweater[- ]?vest|knit[- ]?vest|gilet|fleece|shrug|poncho|crewneck\s*knit)\b/i;
 
 const STANDALONE_BASE_REGEX =
-  /\b(t-?shirt|tee|oxford|dress\s*shirt|button[- ]?(down|up)|poplin\s*shirt|linen\s*shirt|camp\s*shirt|polo|tank|singlet|camisole|blouse|henley|bodysuit|undershirt)\b/i;
+  /\b(t-?shirt|tee|oxford|dress\s*shirt|button[- ]?(down|up)|poplin\s*shirt|linen\s*shirt|camp\s*shirt|cuban\s*collar|polo|tank|singlet|camisole|blouse|henley|bodysuit|undershirt)\b/i;
 
 const COLLARED_OR_CRISP_BASE_REGEX =
   /\b(oxford|button[- ]?(down|up)|dress\s*shirt|poplin|chambray|t-?shirt|tee|polo|henley|collared)\b/i;
@@ -440,17 +440,31 @@ export function classifyTopLayerRole(garment: Garment): 'base' | 'mid' {
   if (garment.category !== 'tops') {
     return garment.layeringRole === 'Mid' ? 'mid' : 'base';
   }
-  const text = `${garment.name} ${garment.subCategory} ${garment.silhouette} ${garment.texture}`;
-  if (MID_LAYER_REGEX.test(text)) {
+  const nameAndSub = `${garment.name} ${garment.subCategory}`;
+  const fullText = `${nameAndSub} ${garment.silhouette} ${garment.texture}`;
+
+  // Explicit mid-layer garments (sweaters, cardigans, hoodies, vests, pullovers) take top priority
+  if (MID_LAYER_REGEX.test(nameAndSub)) {
     return 'mid';
   }
-  if (STANDALONE_BASE_REGEX.test(text)) {
+  // Explicit base garments (shirts, tees, polos, oxfords, henleys, tanks, blouses) stay 'base'
+  // even when their texture mentions "fine knit" or "ribbed knit"
+  if (STANDALONE_BASE_REGEX.test(nameAndSub)) {
+    return 'base';
+  }
+  if (MID_LAYER_REGEX.test(fullText)) {
+    return 'mid';
+  }
+  if (STANDALONE_BASE_REGEX.test(fullText)) {
     return 'base';
   }
   if (garment.layeringRole === 'Mid') {
     return 'mid';
   }
-  // Thick wool/cashmere/knit tops default to mid-layer
+  if (garment.layeringRole === 'Base') {
+    return 'base';
+  }
+  // Thick wool/cashmere/knit tops without shirt/tee/polo keywords default to mid-layer
   if (
     garment.fabricWeight === 'Heavyweight' &&
     /\b(wool|cashmere|merino|knit|fleece|alpaca|mohair)\b/i.test(`${garment.fabric} ${garment.texture}`)
@@ -473,6 +487,103 @@ export function requiresUnderlayer(garment: Garment): boolean {
     return false;
   }
   return OPEN_OR_HEAVY_MID_REGEX.test(text) || garment.layeringRole === 'Mid';
+}
+
+/**
+ * Evaluates whether a specific owned Base top (shirt/tee/polo) can physically and stylistically
+ * be layered UNDER a specific owned Mid-layer (sweater/cardigan/hoodie/vest).
+ */
+export function evaluateBaseUnderMidCompatibility(
+  base: Garment,
+  mid: Garment
+): { compatible: boolean; score: number; reason: string } {
+  const baseW = FABRIC_WEIGHT_RANK[base.fabricWeight] ?? 1;
+  const midW = FABRIC_WEIGHT_RANK[mid.fabricWeight] ?? 2;
+  const volOrder: Record<SilhouetteVolume, number> = {
+    slim: 1,
+    tailored: 2,
+    relaxed: 3,
+    oversized: 4,
+  };
+  const baseVol = volOrder[classifyVolume(base)];
+  const midVol = volOrder[classifyVolume(mid)];
+
+  if (baseW > midW) {
+    return {
+      compatible: false,
+      score: 28,
+      reason: `${base.fabricWeight.toLowerCase()} ${base.fabric} bulks and bunches under a ${mid.fabricWeight.toLowerCase()} mid-layer`,
+    };
+  }
+  if (baseVol > midVol + 1) {
+    return {
+      compatible: false,
+      score: 34,
+      reason: `${base.fit.toLowerCase()} volume bunches underneath a ${mid.fit.toLowerCase()} outer knit`,
+    };
+  }
+
+  const baseText = `${base.name} ${base.subCategory} ${base.fabric} ${base.silhouette}`.toLowerCase();
+  const midText = `${mid.name} ${mid.subCategory} ${mid.silhouette}`.toLowerCase();
+
+  // Formal spread & collar realism
+  const formDiff = Math.abs(base.formality - mid.formality);
+  if (formDiff >= 5) {
+    return {
+      compatible: false,
+      score: 42,
+      reason: `wide formality clash (${base.formality}/10 base under ${mid.formality}/10 mid-layer)`,
+    };
+  }
+
+  // Camp/resort linen shirts generally look sloppy under closed crewnecks/sweaters/hoodies
+  if (
+    /\b(camp|cuban|hawaiian|resort)\b/.test(baseText) &&
+    /\b(crew(neck)?|sweater|pullover|hoodie|sweatshirt|quarter[- ]?zip|half[- ]?zip)\b/.test(midText)
+  ) {
+    return {
+      compatible: false,
+      score: 46,
+      reason: `open camp collar fights a closed ${mid.subCategory.toLowerCase()} neckline`,
+    };
+  }
+
+  const colorHarmony = computeColorHarmony(base.colorHex, mid.colorHex);
+  const baseSolid = /solid|subtle|micro/i.test(base.pattern);
+  const midSolid = /solid|subtle|micro/i.test(mid.pattern);
+  const patternClash = !baseSolid && !midSolid;
+
+  let score = Math.round(colorHarmony * 0.55 + Math.max(40, 100 - formDiff * 11) * 0.3 + 15);
+  if (baseW < midW) score += 6;
+  if (baseVol <= midVol) score += 5;
+  if (COLLARED_OR_CRISP_BASE_REGEX.test(baseText)) score += 5;
+  if (patternClash) score -= 18;
+  if (colorHarmony <= 72) score -= 12;
+
+  const finalScore = Math.max(30, Math.min(98, score));
+  if (patternClash) {
+    return {
+      compatible: false,
+      score: finalScore,
+      reason: `competing patterns (${base.pattern} under ${mid.pattern}) clash at the neckline`,
+    };
+  }
+  if (colorHarmony <= 72) {
+    return {
+      compatible: false,
+      score: finalScore,
+      reason: `${base.primaryColor} and ${mid.primaryColor} have low tonal separation or undertone clash`,
+    };
+  }
+
+  const collarHint = /\b(oxford|button|dress\s*shirt|poplin|chambray|polo)\b/.test(baseText)
+    ? 'clean collar peek at the neckline'
+    : 'smooth crewneck/tee base layer without collar bulk';
+  return {
+    compatible: finalScore >= 68,
+    score: finalScore,
+    reason: `${base.fabricWeight.toLowerCase()} ${base.fabric} drapes cleanly under ${mid.fabric} (${collarHint})`,
+  };
 }
 
 /**
@@ -1463,7 +1574,11 @@ export function generateCandidateCombinations(
   const avoidSweaters = /\b(no|without)\s+(sweater|sweaters|knit|knitwear|hoodie|cardigan|layers?)\b/.test(cleanPrompt);
   const avoidSneakers = /\b(no|without)\s+(sneakers?|trainers?|runners?)\b/.test(cleanPrompt);
   const avoidDenim = /\b(no|without)\s+(jeans?|denim)\b/.test(cleanPrompt);
-  const wantLayers = /\b(layer|layered|layering|underlayer|shirt\s*under|over\s*a\s*shirt|sweater\s*over)\b/.test(cleanPrompt);
+  const wantLayers =
+    !avoidSweaters &&
+    /\b(layer|layered|layering|underlayer|shirt\s*under|over\s*a\s*shirt|sweater|cardigan|pullover|hoodie|vest|knitwear)\b/.test(
+      cleanPrompt
+    );
   const preferMonochrome = /\b(monochrome|all[- ]black|all[- ]white|tonal)\b/.test(cleanPrompt);
 
   const tasteCentroid = computeTasteCentroid(items, vectors, savedOutfits);

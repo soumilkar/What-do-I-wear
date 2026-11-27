@@ -9,6 +9,7 @@ import type {
 import {
   classifyTopLayerRole,
   computeDeterministicVector,
+  evaluateBaseUnderMidCompatibility,
   generateCandidateCombinations,
   inferEffectiveSeason,
   isSummerUnsuitable,
@@ -29,6 +30,8 @@ export interface AdvisorWardrobeContext {
   spotlightIds: string[];
   recentlyMentionedIds: string[];
   unexploredCount: number;
+  ownedInventorySummary: string;
+  layeringGuideSection: string;
   spotlightSection: string;
   verifiedBlueprintsSection: string;
   cooldownSection: string;
@@ -274,9 +277,43 @@ export function ensureGarmentHyperlinks(
     }
   }
 
+  // Step 3: Collect referencedItemIds for the clickable outfit chip bar below the message.
+  // Keep ALL inline [[item:...]] links clickable in text, but exclude items mentioned ONLY inside
+  // "What NOT to wear / Skip / Avoid" lines or sections from the recommended outfit chip bar.
+  const recommendedSet = new Set<string>();
+  const allLinkedSet = new Set<string>();
+  const tagScan = /\[\[(?:item|garment):([a-zA-Z0-9_-]+)(?:\|[^\]]+)?\]\]/g;
+  const avoidHeaderRe = /^#{1,4}\s*.*(what\s+not\s+to\s+wear|do\s+not\s+wear|don't\s+wear|avoid|skip|leave\s+in\s+the\s+closet)/i;
+  const avoidLineRe = /(what\s+not\s+to\s+wear|do\s+not\s+wear|don't\s+wear|do\s+not\s+layer|don't\s+layer|avoid\s+pairing|avoid\s+wearing|avoid\s+layering|skip\s+wearing|skip\s+the|leave\s+.+\s+in\s+the\s+closet)/i;
+  let inAvoidSection = false;
+
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (/^#{1,4}\s+/.test(trimmed)) {
+      inAvoidSection = avoidHeaderRe.test(trimmed);
+    }
+    const lineIsAvoid = inAvoidSection || avoidLineRe.test(trimmed);
+
+    tagScan.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = tagScan.exec(line)) !== null) {
+      const id = m[1];
+      if (!byId.has(id)) continue;
+      allLinkedSet.add(id);
+      if (!lineIsAvoid) {
+        recommendedSet.add(id);
+      }
+    }
+  }
+
+  const finalReferenced =
+    recommendedSet.size > 0
+      ? Array.from(recommendedSet).slice(0, 14)
+      : Array.from(allLinkedSet.size > 0 ? allLinkedSet : referencedSet).slice(0, 14);
+
   return {
     content,
-    referencedItemIds: Array.from(referencedSet).slice(0, 6),
+    referencedItemIds: finalReferenced,
   };
 }
 
@@ -511,6 +548,101 @@ export function buildAdvisorWardrobeContext(
     }
   }
 
+  const ownedInventorySummary = [
+    `BASE TOPS (shirts/tees/polos worn against skin or under sweaters): ${buckets.baseTops.length}${buckets.baseTops.length === 0 ? ' [ZERO UPLOADED — DO NOT INVENT A SHIRT OR TEE!]' : ''}`,
+    `MID LAYERS (sweaters/cardigans/hoodies/knits): ${buckets.midLayers.length}`,
+    `OUTERWEAR (jackets/coats/blazers): ${buckets.outerwear.length}${buckets.outerwear.length === 0 ? ' [ZERO UPLOADED — DO NOT INVENT A JACKET!]' : ''}`,
+    `BOTTOMS (trousers/jeans/chinos/shorts): ${buckets.bottoms.length}${buckets.bottoms.length === 0 ? ' [ZERO UPLOADED — DO NOT INVENT PANTS!]' : ''}`,
+    `FOOTWEAR: ${buckets.footwear.length}${buckets.footwear.length === 0 ? ' [ZERO UPLOADED — DO NOT INVENT SHOES!]' : ''}`,
+    `ACCESSORIES: ${buckets.accessories.length}`,
+  ].join('\n');
+
+  // Build deterministic Owned-Closet Layering & "What NOT to Wear" matrix for sweaters/mid-layers and season traps
+  const layeringLines: string[] = [];
+  if (effectiveSeason === 'Summer') {
+    const summerTraps = scored
+      .filter((s) => isSummerUnsuitable(s.garment))
+      .slice(0, 4)
+      .map((s) => `[[item:${s.garment.id}|${s.garment.name}]] (${s.garment.fabricWeight} ${s.garment.fabric})`);
+    if (summerTraps.length > 0) {
+      layeringLines.push(
+        `DO NOT WEAR IN SUMMER (leave these owned pieces in the closet): ${summerTraps.join(', ')}.`
+      );
+    }
+  } else if (buckets.midLayers.length > 0) {
+    // Prioritize any mid-layer the user explicitly asked about, plus top fresh mid-layers
+    const focusMids = [
+      ...buckets.midLayers.filter((m) => m.isAsked),
+      ...buckets.midLayers.filter((m) => !m.isAsked && !m.isCooldown),
+      ...buckets.midLayers.filter((m) => !m.isAsked && m.isCooldown),
+    ].slice(0, 4);
+
+    for (const midEntry of focusMids) {
+      const mid = midEntry.garment;
+      if (buckets.baseTops.length === 0) {
+        layeringLines.push(
+          `For [[item:${mid.id}|${mid.name}]]: OWNED BASE UNDERLAYERS = NONE UPLOADED. Do NOT invent a shirt — tell the user honestly they have no base shirt/tee uploaded to layer underneath it.`
+        );
+        continue;
+      }
+
+      const evaluatedBases = buckets.baseTops.map((b) => ({
+        base: b.garment,
+        isCooldown: b.isCooldown,
+        compat: evaluateBaseUnderMidCompatibility(b.garment, mid),
+      }));
+
+      const bestUnder = evaluatedBases
+        .filter((e) => e.compat.compatible)
+        .sort((a, b) => {
+          const aBoost = a.isCooldown ? -8 : 0;
+          const bBoost = b.isCooldown ? -8 : 0;
+          return b.compat.score + bBoost - (a.compat.score + aBoost);
+        })
+        .slice(0, 3);
+
+      const avoidUnder = evaluatedBases
+        .filter((e) => !e.compat.compatible)
+        .sort((a, b) => a.compat.score - b.compat.score)
+        .slice(0, 2);
+
+      const bestText =
+        bestUnder.length > 0
+          ? bestUnder
+              .map((e) => `[[item:${e.base.id}|${e.base.name}]] (${e.compat.reason})`)
+              .join('; ')
+          : 'NONE COMPATIBLE IN UPLOADED CLOSET — tell user honestly not to layer their mismatched pieces under it and specify what base layer to add';
+
+      const avoidText =
+        avoidUnder.length > 0
+          ? ` | DO NOT LAYER UNDER IT: ${avoidUnder
+              .map((e) => `[[item:${e.base.id}|${e.base.name}]] (${e.compat.reason})`)
+              .join('; ')}`
+          : '';
+
+      layeringLines.push(
+        `Under [[item:${mid.id}|${mid.name}]] (${mid.fabricWeight} ${mid.fabric}): BEST OWNED UNDERLAYERS => ${bestText}${avoidText}`
+      );
+    }
+  }
+
+  if (intent.inferredOccasion === 'Formal' || intent.inferredOccasion === 'Evening') {
+    const tooCasual = scored
+      .filter((s) => s.garment.formality <= 3)
+      .slice(0, 3)
+      .map((s) => `[[item:${s.garment.id}|${s.garment.name}]] (formality ${s.garment.formality}/10)`);
+    if (tooCasual.length > 0) {
+      layeringLines.push(
+        `TOO CASUAL FOR ${intent.inferredOccasion.toUpperCase()} (do not wear): ${tooCasual.join(', ')}.`
+      );
+    }
+  }
+
+  const layeringGuideSection =
+    layeringLines.length > 0
+      ? layeringLines.join('\n')
+      : 'Use only owned pieces from the catalog; pair lighter bases cleanly under heavier outer layers.';
+
   const spotlightSection =
     spotlightEntries.length > 0
       ? spotlightEntries.map((e) => formatCompactLine(e.garment, false)).join('\n')
@@ -548,6 +680,8 @@ export function buildAdvisorWardrobeContext(
     spotlightIds,
     recentlyMentionedIds,
     unexploredCount,
+    ownedInventorySummary,
+    layeringGuideSection,
     spotlightSection,
     verifiedBlueprintsSection,
     cooldownSection,

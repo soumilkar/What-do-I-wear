@@ -371,3 +371,95 @@ test('ensureGarmentHyperlinks auto-links plain garment mentions, fixes labels, a
   assert.ok(!compactHist.includes('[[item:'));
 });
 
+test('classifyTopLayerRole keeps knit polos/tees as base and evaluateBaseUnderMidCompatibility flags incompatible underlayers', async () => {
+  const { classifyTopLayerRole, evaluateBaseUnderMidCompatibility } = await import('./styleEngine');
+  const closet = make44ItemCloset();
+
+  const knitPolo: Garment = {
+    ...closet[0],
+    id: 'knit_polo',
+    name: 'Charcoal Fine Knit Polo',
+    subCategory: 'Polo Shirt',
+    texture: 'Fine ribbed knit',
+    fabric: 'Fine merino cotton',
+    fabricWeight: 'Lightweight',
+    layeringRole: 'Base',
+  };
+  assert.equal(classifyTopLayerRole(knitPolo), 'base', 'Knit polo must stay a Base top, not Mid');
+
+  const heavyBase: Garment = {
+    ...closet[0],
+    id: 'heavy_base',
+    name: 'Heavy Flannel Overshirt Base',
+    subCategory: 'Button-Down Shirt',
+    fabricWeight: 'Heavyweight',
+    fit: 'Oversized',
+  };
+  const campShirt: Garment = {
+    ...closet[0],
+    id: 'camp_base',
+    name: 'Olive Camp Collar Linen Shirt',
+    subCategory: 'Camp Shirt',
+    fabricWeight: 'Lightweight',
+    fit: 'Relaxed',
+  };
+  const sweater = closet.find((g) => g.id === 'mid_1')!;
+
+  const goodRes = evaluateBaseUnderMidCompatibility(closet[0], sweater);
+  assert.equal(goodRes.compatible, true, 'Lightweight oxford should be compatible under midweight sweater');
+
+  const heavyRes = evaluateBaseUnderMidCompatibility(heavyBase, sweater);
+  assert.equal(heavyRes.compatible, false, 'Heavyweight base must be rejected under midweight sweater');
+
+  const campRes = evaluateBaseUnderMidCompatibility(campShirt, sweater);
+  assert.equal(campRes.compatible, false, 'Open camp collar must be rejected under closed crewneck sweater');
+});
+
+test('buildAdvisorWardrobeContext builds owned layering guide, flags missing base slots, and excludes What-NOT-to-Wear items from recommended chips', () => {
+  const closet = make44ItemCloset();
+  const ctx = buildAdvisorWardrobeContext(
+    closet,
+    [],
+    'How should I wear my Olive Merino Crewneck Sweater 1?',
+    sampleProfile
+  );
+  assert.ok(ctx.ownedInventorySummary.includes('BASE TOPS'));
+  assert.ok(
+    ctx.layeringGuideSection.includes('Under [[item:mid_1|Olive Merino Crewneck Sweater 1]]'),
+    'Expected deterministic owned underlayer guide for requested sweater'
+  );
+  assert.ok(
+    ctx.layeringGuideSection.includes('BEST OWNED UNDERLAYERS'),
+    'Expected exact owned base underlayer recommendations'
+  );
+
+  // When a closet has ZERO base tops, inventory & layering guide must warn NOT to invent a shirt
+  const sweaterOnlyCloset = closet.filter((g) => !g.id.startsWith('base_'));
+  const noBaseCtx = buildAdvisorWardrobeContext(
+    sweaterOnlyCloset,
+    [],
+    'Style my Olive Merino Crewneck Sweater 1',
+    sampleProfile
+  );
+  assert.ok(noBaseCtx.ownedInventorySummary.includes('ZERO UPLOADED — DO NOT INVENT A SHIRT'));
+  assert.ok(noBaseCtx.layeringGuideSection.includes('OWNED BASE UNDERLAYERS = NONE UPLOADED'));
+
+  // What NOT to Wear items stay clickable inline in markdown, but are excluded from recommended outfit chips
+  const replyWithAvoid = [
+    '### Outfit 1',
+    '- **Base Layer**: [[item:base_1|Ivory Cotton Oxford Shirt 1]]',
+    '- **Mid Layer**: [[item:mid_1|Olive Merino Crewneck Sweater 1]]',
+    '- **Bottoms**: [[item:bot_1|Charcoal Tailored Chinos 1]]',
+    '- **Footwear**: [[item:shoe_1|Espresso Leather Loafers 1]]',
+    '',
+    '### What NOT to Wear With This',
+    '- Avoid layering [[item:base_2|Navy Cotton Oxford Shirt 2]] under this knit.',
+  ].join('\n');
+
+  const linked = ensureGarmentHyperlinks(replyWithAvoid, closet);
+  assert.ok(linked.content.includes('[[item:base_2|Navy Cotton Oxford Shirt 2]]'), 'Inline link for avoid item stays clickable');
+  assert.ok(!linked.referencedItemIds.includes('base_2'), 'Avoid-only item must NOT appear in recommended outfit chip tray');
+  assert.deepEqual(linked.referencedItemIds, ['base_1', 'mid_1', 'bot_1', 'shoe_1']);
+});
+
+

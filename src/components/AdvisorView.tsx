@@ -20,6 +20,7 @@ import type {
 import { compressImageToDataUrl } from '../utils/imageCompress';
 import {
   ALLOWED_IMAGE_MIME_TYPES,
+  classifyTopLayerRole,
   computeWardrobeIntelligenceSummary,
 } from '../utils/styleEngine';
 import { AdvisorMessageContent } from './AdvisorMessageContent';
@@ -534,26 +535,43 @@ export function AdvisorView({
 
                   {/* Referenced Owned Garments */}
                   {!isUser && refPieces.length > 0 && (
-                    <div className="mt-2.5 flex flex-wrap gap-2 max-w-[90%]">
-                      {refPieces.map((piece) => (
-                        <button
-                          key={piece.id}
-                          type="button"
-                          onClick={() => setPreviewGarment(piece)}
-                          className="inline-flex items-center gap-2 pr-3 pl-1.5 py-1 rounded-xl bg-white border border-black/[0.08] hover:border-black/[0.2] transition-colors"
-                        >
-                          <div className="w-6 h-7 rounded-md overflow-hidden bg-[#EFEFF2] shrink-0">
-                            <SmartImage
-                              src={piece.imageUrl}
-                              alt={piece.name}
-                              swatchHex={piece.colorHex}
-                            />
-                          </div>
-                          <span className="text-[12px] font-medium text-[#1D1D1F]">
-                            {piece.name}
-                          </span>
-                        </button>
-                      ))}
+                    <div className="mt-2.5 flex flex-wrap gap-2 max-w-[92%]">
+                      {refPieces.map((piece) => {
+                        const roleLabel =
+                          piece.category === 'tops'
+                            ? classifyTopLayerRole(piece) === 'mid'
+                              ? 'Mid'
+                              : 'Base'
+                            : piece.category === 'outerwear'
+                              ? 'Outer'
+                              : piece.category === 'bottoms'
+                                ? 'Bottom'
+                                : piece.category === 'footwear'
+                                  ? 'Shoes'
+                                  : 'Accent';
+                        return (
+                          <button
+                            key={piece.id}
+                            type="button"
+                            onClick={() => setPreviewGarment(piece)}
+                            className="inline-flex items-center gap-2 pr-3 pl-1.5 py-1 rounded-xl bg-white border border-black/[0.08] hover:border-black/[0.2] transition-colors"
+                          >
+                            <div className="w-6 h-7 rounded-md overflow-hidden bg-[#EFEFF2] shrink-0">
+                              <SmartImage
+                                src={piece.imageUrl}
+                                alt={piece.name}
+                                swatchHex={piece.colorHex}
+                              />
+                            </div>
+                            <span className="text-[12px] font-medium text-[#1D1D1F]">
+                              {piece.name}
+                            </span>
+                            <span className="text-[10.5px] text-[#86868B]">
+                              {roleLabel}
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
 
