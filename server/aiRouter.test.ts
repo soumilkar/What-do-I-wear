@@ -150,3 +150,20 @@ test('compactGarmentLine compresses garment metadata cleanly for minimal AI toke
   assert.ok(line.includes('#C29B6C'));
   assert.ok(line.length < 220, 'Compact descriptor should stay under 220 chars');
 });
+
+test('Vercel serverless entrypoint api/index.ts loads cleanly under native Node.js ESM without ERR_MODULE_NOT_FOUND', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const out = execFileSync(
+    process.execPath,
+    [
+      '-e',
+      "import('./api/index.ts').then((m) => { if (typeof m.default !== 'function') process.exit(2); console.log('ESM_OK'); })",
+    ],
+    {
+      env: { ...process.env, VERCEL: '1' },
+      encoding: 'utf8',
+    }
+  );
+  assert.ok(out.includes('ESM_OK'), `Expected native Node ESM boot to succeed, got: ${out}`);
+});
+

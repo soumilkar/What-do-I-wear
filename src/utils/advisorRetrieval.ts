@@ -5,7 +5,7 @@ import type {
   OutfitCombination,
   SeasonTag,
   UserProfile,
-} from '../types/styling';
+} from '../types/styling.ts';
 import {
   classifyTopLayerRole,
   computeDeterministicVector,
@@ -15,7 +15,7 @@ import {
   isSummerUnsuitable,
   isWinterUnsuitable,
   scoreGarmentForPerson,
-} from './styleEngine';
+} from './styleEngine.ts';
 
 export interface AdvisorIntent {
   needsWebSearch: boolean;
