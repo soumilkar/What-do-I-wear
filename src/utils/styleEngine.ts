@@ -1321,13 +1321,16 @@ export function scoreGarmentForPerson(garment: Garment, profile?: UserProfile | 
       if (oklch.L >= 0.55) score += 3;
     }
 
-    const matchesSilhouette = bp.idealSilhouettes.some((s) => {
+    const idealSilhouettes = Array.isArray(bp.idealSilhouettes) ? bp.idealSilhouettes : [];
+    const subCategoryLower = (garment.subCategory || '').toLowerCase();
+    const matchesSilhouette = idealSilhouettes.some((s) => {
       const words = s.toLowerCase().split(/\s+/).filter((w) => w.length >= 4);
-      return words.some((w) => fitText.includes(w) || garment.subCategory.toLowerCase().includes(w));
+      return words.some((w) => fitText.includes(w) || subCategoryLower.includes(w));
     });
     if (matchesSilhouette) score += 7;
 
-    const matchesFabric = bp.recommendedFabrics.some((f) => {
+    const recommendedFabrics = Array.isArray(bp.recommendedFabrics) ? bp.recommendedFabrics : [];
+    const matchesFabric = recommendedFabrics.some((f) => {
       const words = f.toLowerCase().split(/\s+/).filter((w) => w.length >= 4);
       return words.some((w) => fabricText.includes(w));
     });
@@ -2647,16 +2650,17 @@ export function analyzeWardrobeGaps(
   }
 
   // Blueprint color gap check: if user has a blueprint but few tops in their bestColors
-  if (profile.blueprint && profile.blueprint.bestColors.length > 0 && counts.tops >= 2) {
+  const bpBestColors = Array.isArray(profile.blueprint?.bestColors) ? profile.blueprint.bestColors : [];
+  if (profile.blueprint && bpBestColors.length > 0 && counts.tops >= 2) {
     const bestColorTops = items.filter(
       (g) =>
         (g.category === 'tops' || g.category === 'outerwear') &&
-        profile.blueprint!.bestColors.some((bc) =>
-          g.primaryColor.toLowerCase().includes(bc.toLowerCase().split(' ')[0])
+        bpBestColors.some((bc) =>
+          (g.primaryColor || '').toLowerCase().includes(bc.toLowerCase().split(' ')[0])
         )
     );
     if (bestColorTops.length === 0) {
-      const topPick = profile.blueprint.bestColors.slice(0, 2).join(' or ');
+      const topPick = bpBestColors.slice(0, 2).join(' or ');
       gaps.push({
         id: 'gap-blueprint-color',
         title: `Signature ${profile.blueprint.colorSeason} Top`,

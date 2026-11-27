@@ -1106,19 +1106,39 @@ export function createApiApp(): express.Express {
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
+    req.socket?.setNoDelay?.(true);
     res.flushHeaders?.();
 
     let clientClosed = false;
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
+    const stopHeartbeat = () => {
+      if (heartbeat) {
+        clearInterval(heartbeat);
+        heartbeat = null;
+      }
+    };
+
     res.on('close', () => {
       if (!res.writableEnded) {
         clientClosed = true;
       }
+      stopHeartbeat();
     });
 
     const writeSseEvent = (event: string, data: unknown) => {
       if (clientClosed || res.writableEnded) return;
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     };
+
+    // Flush an initial SSE comment + periodic keepalive pings so proxies/mobile networks never drop idle streams
+    res.write(': connected\n\n');
+    heartbeat = setInterval(() => {
+      if (clientClosed || res.writableEnded) {
+        stopHeartbeat();
+        return;
+      }
+      res.write(': ping\n\n');
+    }, 2500);
 
     try {
       const reply = await streamShoppingAdvisorChat(
@@ -1133,15 +1153,21 @@ export function createApiApp(): express.Express {
         {
           onStatus: (phase) => writeSseEvent('status', { phase }),
           onDelta: (text) => writeSseEvent('delta', { text }),
+          isClosed: () => clientClosed || res.writableEnded,
         }
       );
 
-      writeSseEvent('done', reply);
-      if (!res.writableEnded) res.end();
+      if (!clientClosed && !res.writableEnded) {
+        writeSseEvent('done', reply);
+      }
     } catch (err) {
-      writeSseEvent('error', {
-        error: err instanceof Error ? err.message : 'Shopping advisor stream failed.',
-      });
+      if (!clientClosed && !res.writableEnded) {
+        writeSseEvent('error', {
+          error: err instanceof Error ? err.message : 'Shopping advisor stream failed.',
+        });
+      }
+    } finally {
+      stopHeartbeat();
       if (!res.writableEnded) res.end();
     }
   });

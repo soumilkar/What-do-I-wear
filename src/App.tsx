@@ -39,7 +39,7 @@ import {
   updateProfileInCloud,
   updateProfilePhotoInCloud,
 } from './lib/cloudWardrobe';
-import { apiJson, streamSsePost } from './lib/apiClient';
+import { apiJson, SseStreamEndedError, streamSsePost } from './lib/apiClient';
 import {
   auth,
   reloadAndRefreshUser,
@@ -55,6 +55,7 @@ import type {
   SeasonTag,
   UserProfile,
 } from './types/styling';
+import { ensureGarmentHyperlinks } from './utils/advisorRetrieval';
 import { compressImageToDataUrl } from './utils/imageCompress';
 
 /**
@@ -569,36 +570,80 @@ export default function App() {
     const strippedHistory = data.advisorMessages.map(({ attachedImages: _imgs, ...rest }) => rest);
     const portraitImage = extractPortraitPayload(data.profile);
 
-    const reply = await streamSsePost<{
+    const advisorPayload = {
+      message: effectiveMessage,
+      history: strippedHistory,
+      garments: stripGarmentImages(data.garments),
+      savedOutfits: data.savedOutfits,
+      profile: stripProfilePhoto(data.profile),
+      portraitImage,
+      memorySummary: advisorMemory.summary,
+      summarizedCount: advisorMemory.summarizedCount,
+      images: safeImages.map((img, idx) => ({
+        base64: img.base64,
+        mimeType: img.mimeType,
+        label: img.label || `Option ${idx + 1}`,
+      })),
+    };
+
+    type AdvisorReplyPayload = {
       content: string;
       referencedItemIds?: string[];
       sources?: GroundingSource[];
       modelUsed?: string;
       memorySummary?: string;
       summarizedCount?: number;
-    }>(
-      '/api/ai/advisor-chat-stream',
-      {
-        message: effectiveMessage,
-        history: strippedHistory,
-        garments: stripGarmentImages(data.garments),
-        savedOutfits: data.savedOutfits,
-        profile: stripProfilePhoto(data.profile),
-        portraitImage,
-        memorySummary: advisorMemory.summary,
-        summarizedCount: advisorMemory.summarizedCount,
-        images: safeImages.map((img, idx) => ({
-          base64: img.base64,
-          mimeType: img.mimeType,
-          label: img.label || `Option ${idx + 1}`,
-        })),
-      },
-      {
-        onDelta: callbacks.onDelta,
-        onStatus: callbacks.onStatus,
-        signal: callbacks.signal,
+      partial?: boolean;
+    };
+
+    let reply: AdvisorReplyPayload;
+    try {
+      reply = await streamSsePost<AdvisorReplyPayload>(
+        '/api/ai/advisor-chat-stream',
+        advisorPayload,
+        {
+          onDelta: callbacks.onDelta,
+          onStatus: callbacks.onStatus,
+          signal: callbacks.signal,
+        }
+      );
+
+      // If the SSE connection dropped after streaming text but before `event: done`,
+      // run garment hyperlink resolution client-side so clickable wardrobe chips still appear.
+      if (reply.partial && reply.content) {
+        const linked = ensureGarmentHyperlinks(reply.content, data.garments);
+        reply = {
+          ...reply,
+          content: linked.content,
+          referencedItemIds: linked.referencedItemIds,
+        };
       }
-    );
+    } catch (err) {
+      // If SSE dropped before delivering any tokens (e.g., serverless cold-start/proxy idle cutoff),
+      // transparently fall back ONCE to standard JSON POST so the user still gets their full answer.
+      if (
+        err instanceof SseStreamEndedError &&
+        !callbacks.signal.aborted &&
+        err.receivedText.trim().length === 0
+      ) {
+        callbacks.onStatus?.('thinking');
+        reply = await apiJson<AdvisorReplyPayload>(
+          '/api/ai/advisor-chat',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(advisorPayload),
+            signal: callbacks.signal,
+          },
+          { retries: 0 }
+        );
+        if (reply.content) {
+          callbacks.onDelta(reply.content);
+        }
+      } else {
+        throw err;
+      }
+    }
 
     if (typeof reply.memorySummary === 'string') {
       persistAdvisorMemory({

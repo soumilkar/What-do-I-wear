@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { apiJson, extractApiErrorMessage, streamSsePost } from './apiClient';
+import {
+  apiJson,
+  extractApiErrorMessage,
+  SseStreamEndedError,
+  streamSsePost,
+} from './apiClient';
 
 test('extractApiErrorMessage handles string errors, nested Vercel error objects, and fallback messages safely', () => {
   assert.equal(extractApiErrorMessage({ error: '  Bad image format  ' }), 'Bad image format');
@@ -96,16 +101,18 @@ test('apiJson handles object-shaped error responses without throwing trim TypeEr
   }
 });
 
-test('streamSsePost parses split SSE delta/status/done frames incrementally and surfaces mid-stream errors', async () => {
+test('streamSsePost parses split SSE delta/status/done frames, salvages partial streams, and throws SseStreamEndedError on empty EOF', async () => {
   const originalFetch = globalThis.fetch;
   const encoder = new TextEncoder();
 
   try {
-    // Case 1: Chunked SSE stream with split frames
+    // Case 1: Chunked SSE stream with heartbeat comments + split frames
     globalThis.fetch = (async () => {
       const stream = new ReadableStream({
         start(controller) {
+          controller.enqueue(encoder.encode(': connected\n\n'));
           controller.enqueue(encoder.encode('event: status\ndata: {"phase":"memory"}\n\n'));
+          controller.enqueue(encoder.encode(': ping\n\n'));
           controller.enqueue(encoder.encode('event: delta\ndata: {"text":"Yes, pair "}\n'));
           controller.enqueue(encoder.encode('\nevent: delta\ndata: {"text":"navy chinos."}\n\n'));
           controller.enqueue(
@@ -143,7 +150,51 @@ test('streamSsePost parses split SSE delta/status/done frames incrementally and 
     assert.equal(done.content, 'Yes, pair navy chinos.');
     assert.equal(done.summarizedCount, 4);
 
-    // Case 2: Mid-stream SSE error event
+    // Case 2: Stream drops after meaningful text arrived (no done frame) -> salvage gracefully!
+    globalThis.fetch = (async () => {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            encoder.encode(
+              'event: delta\ndata: {"text":"BUY (8/10) — Warm chestnut suede pairs cleanly with your olive chinos."}\n\n'
+            )
+          );
+          controller.close();
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+      });
+    }) as typeof fetch;
+
+    const salvaged = await streamSsePost<{ content: string; partial?: boolean }>(
+      '/api/ai/advisor-chat-stream',
+      { message: 'should I buy this' }
+    );
+    assert.equal(salvaged.partial, true);
+    assert.match(salvaged.content, /BUY \(8\/10\)/);
+
+    // Case 3: Stream drops with zero text received -> throws typed SseStreamEndedError so caller can fall back to JSON
+    globalThis.fetch = (async () => {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(': connected\n\n: ping\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+      });
+    }) as typeof fetch;
+
+    await assert.rejects(
+      () => streamSsePost('/api/ai/advisor-chat-stream', { message: 'should I buy this' }),
+      (err: unknown) => err instanceof SseStreamEndedError && err.receivedText === ''
+    );
+
+    // Case 4: Mid-stream SSE error event
     globalThis.fetch = (async () => {
       const stream = new ReadableStream({
         start(controller) {

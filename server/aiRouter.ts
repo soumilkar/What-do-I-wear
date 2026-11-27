@@ -113,6 +113,33 @@ export const ADVISOR_QUICK_HIERARCHY: ModelTier[] = [
 
 export const ADVISOR_STANDARD_HIERARCHY: ModelTier[] = [
   {
+    id: 'gemini-4-hydrogen (low)',
+    model: 'gemini-4-hydrogen',
+    thinkingLevel: ThinkingLevel.LOW,
+    supportsSearch: true,
+  },
+  {
+    id: 'gemini-4-hydrogen (medium)',
+    model: 'gemini-4-hydrogen',
+    thinkingLevel: ThinkingLevel.MEDIUM,
+    supportsSearch: true,
+  },
+  {
+    id: 'gemini-3.1-flash-lite (low)',
+    model: 'gemini-3.1-flash-lite',
+    thinkingLevel: ThinkingLevel.LOW,
+    supportsSearch: false,
+  },
+  {
+    id: 'gemini-3.1-flash-lite (minimal)',
+    model: 'gemini-3.1-flash-lite',
+    thinkingLevel: ThinkingLevel.MINIMAL,
+    supportsSearch: false,
+  },
+];
+
+export const ADVISOR_DEEP_STREAM_HIERARCHY: ModelTier[] = [
+  {
     id: 'gemini-4-hydrogen (medium)',
     model: 'gemini-4-hydrogen',
     thinkingLevel: ThinkingLevel.MEDIUM,
@@ -1323,7 +1350,8 @@ Preserve ONLY durable facts:
 Omit filler, greetings, and long garment lists.`;
 
   try {
-    const res = await executeWithModelHierarchy(MEMORY_SUMMARY_HIERARCHY, async (tier) => {
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const summaryPromise = executeWithModelHierarchy(MEMORY_SUMMARY_HIERARCHY, async (tier) => {
       const response = await ai.models.generateContent({
         model: tier.model,
         contents: prompt,
@@ -1336,8 +1364,18 @@ Omit filler, greetings, and long garment lists.`;
       const text = (response.text ?? '').trim();
       if (!text) throw new Error('Empty memory summary');
       return text.slice(0, 900);
+    }).then((res) => res.data);
+
+    // Never let memory compression stall first-token latency on serverless (2.5s cap)
+    const timeoutPromise = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Memory summary timeout')), 2500);
     });
-    return res.data;
+
+    try {
+      return await Promise.race([summaryPromise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
   } catch {
     return buildDeterministicFallbackSummary(existingSummary, newlyEvictedTurns);
   }
@@ -1490,9 +1528,10 @@ NON-NEGOTIABLE STYLING & GROUNDING RULES:
     { text: string } | { inlineData: { mimeType: string; data: string } }
   > = [];
 
-  // Send portrait photo on deeper / outfit / shopping photo turns (skip on ultra-quick text follow-ups to save vision tokens when portrait blueprint is already in profile!)
+  // Only attach raw portrait JPEG bytes when the portrait hasn't already been analyzed into the text blueprint.
+  // Re-uploading 150-200KB of portrait pixels on every store-photo message slows multimodal TTFT on serverless.
   const includePortraitBytes =
-    hasPortrait && portraitImage && (replyMode !== 'quick' || hasImages || !profile.blueprint?.photoAnalyzed);
+    hasPortrait && Boolean(portraitImage) && !profile.blueprint?.photoAnalyzed;
 
   if (includePortraitBytes && portraitImage) {
     multimodalParts.push({
@@ -1528,9 +1567,19 @@ NON-NEGOTIABLE STYLING & GROUNDING RULES:
       ? ADVISOR_QUICK_HIERARCHY
       : replyMode === 'standard'
         ? ADVISOR_STANDARD_HIERARCHY
-        : DEEP_REASONING_HIERARCHY;
+        : ADVISOR_DEEP_STREAM_HIERARCHY;
 
-  const tiers = await resolveFullHierarchy(baseHierarchy, ai);
+  // Never block first-token latency on a cold-start `ai.models.list()` round-trip;
+  // use warm discovered tiers if already cached and refresh in the background otherwise.
+  let tiers: ModelTier[];
+  if (cachedDiscoveredTiers && cachedDiscoveredTiers.length > 0) {
+    const existing = new Set(baseHierarchy.map((t) => t.model));
+    const extras = cachedDiscoveredTiers.filter((t) => !existing.has(t.model));
+    tiers = [...baseHierarchy, ...extras];
+  } else {
+    tiers = baseHierarchy;
+    void refreshLiveModelDiscovery(ai);
+  }
 
   return {
     tiers,
@@ -1622,6 +1671,7 @@ export async function streamShoppingAdvisorChat(
   callbacks?: {
     onDelta?: (delta: string) => void;
     onStatus?: (phase: 'memory' | 'thinking') => void;
+    isClosed?: () => boolean;
   }
 ): Promise<AdvisorChatResult> {
   const ai = getGenAIClient();
@@ -1661,6 +1711,9 @@ export async function streamShoppingAdvisorChat(
     const seenUris = new Set<string>();
 
     for await (const chunk of stream) {
+      if (callbacks?.isClosed?.()) {
+        break;
+      }
       const textPiece = chunk.text ?? '';
       if (textPiece) {
         emittedAnyChunk = true;

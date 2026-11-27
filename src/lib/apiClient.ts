@@ -176,6 +176,16 @@ export async function apiJson<T>(
   throw lastError ?? new Error('Unable to reach the styling server.');
 }
 
+export class SseStreamEndedError extends Error {
+  readonly receivedText: string;
+
+  constructor(message: string, receivedText = '') {
+    super(message);
+    this.name = 'SseStreamEndedError';
+    this.receivedText = receivedText;
+  }
+}
+
 export interface SseStreamOptions {
   onDelta?: (text: string) => void;
   onStatus?: (phase: string) => void;
@@ -185,6 +195,8 @@ export interface SseStreamOptions {
 /**
  * Streams Server-Sent Events (SSE) from a POST endpoint, dispatching live `delta` and `status`
  * frames incrementally and resolving with the final `done` payload.
+ * If the transport closes after meaningful tokens already arrived (>= 20 chars), salvages the
+ * received text cleanly instead of discarding the response.
  */
 export async function streamSsePost<TDone>(
   url: string,
@@ -230,12 +242,13 @@ export async function streamSsePost<TDone>(
   }
 
   if (!res.body) {
-    throw new Error('Streaming response body was unavailable.');
+    throw new SseStreamEndedError('Streaming response body was unavailable.', '');
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let accumulatedText = '';
   let donePayload: TDone | null = null;
   let streamError: string | null = null;
 
@@ -266,7 +279,10 @@ export async function streamSsePost<TDone>(
 
     if (eventName === 'delta') {
       const piece = typeof parsed?.text === 'string' ? parsed.text : '';
-      if (piece) options?.onDelta?.(piece);
+      if (piece) {
+        accumulatedText += piece;
+        options?.onDelta?.(piece);
+      }
     } else if (eventName === 'status') {
       const phase = typeof parsed?.phase === 'string' ? parsed.phase : '';
       if (phase) options?.onStatus?.(phase);
@@ -308,7 +324,19 @@ export async function streamSsePost<TDone>(
   }
 
   if (donePayload === null) {
-    throw new Error('Advisor stream ended before delivering a final reply.');
+    const salvaged = accumulatedText.trim();
+    if (salvaged.length >= 20) {
+      return {
+        content: salvaged,
+        referencedItemIds: [],
+        sources: [],
+        partial: true,
+      } as unknown as TDone;
+    }
+    throw new SseStreamEndedError(
+      'Advisor stream ended before delivering a final reply.',
+      salvaged
+    );
   }
 
   return donePayload;
