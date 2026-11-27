@@ -33,8 +33,8 @@ export function TopNav({
 
   return (
     <>
-      <header className="sticky top-0 z-40 apple-glass border-b border-black/[0.06]">
-        <div className="max-w-[1280px] mx-auto px-5 sm:px-8 h-16 flex items-center justify-between gap-6">
+      <header className="sticky top-0 z-40 shrink-0 w-full h-16 min-h-[64px] bg-white/95 backdrop-blur-md border-b border-black/[0.06]">
+        <div className="max-w-[1280px] mx-auto px-5 sm:px-8 h-full flex items-center justify-between gap-6">
           {/* Zone 1: Single clean wordmark */}
           <button
             type="button"
@@ -118,10 +118,10 @@ export function TopNav({
         </div>
       </header>
 
-      {/* Mobile bottom tab bar — compact height */}
+      {/* Mobile bottom tab bar — exact locked height */}
       <nav
         aria-label="Mobile navigation"
-        className="md:hidden fixed bottom-0 inset-x-0 z-40 apple-glass border-t border-black/[0.08] px-2 py-1.5 flex items-center justify-around"
+        className="md:hidden fixed bottom-0 inset-x-0 z-40 h-[56px] shrink-0 bg-white/95 backdrop-blur-md border-t border-black/[0.08] px-2 flex items-center justify-around"
       >
         {NAV_ITEMS.map((item) => {
           const isActive = activeTab === item.id;

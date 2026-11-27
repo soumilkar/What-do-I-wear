@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   analyzeWardrobeGaps,
+  buildCrossVerifiedStylingGuidance,
   classifyTopLayerRole,
   computeColorHarmony,
   computeDeterministicVector,
@@ -13,6 +14,7 @@ import {
   evaluateProportionAndLayering,
   findBestCompanions,
   generateCandidateCombinations,
+  getCanonicalLayerRole,
   hexToOklch,
   inferEffectiveSeason,
   isSummerUnsuitable,
@@ -853,6 +855,228 @@ test('44-item closet enforces global exposure caps and rotates fresh pieces acro
   assert.ok(
     newlyIntroduced.length >= 4,
     `Expected consecutive batch to introduce >= 4 fresh garments, got ${newlyIntroduced.length}`
+  );
+});
+
+test('Mint Green Button-Down Shirt fixes canonical Base role, ranks white/light bottoms above dark denim, and cross-verifies Styling Guidance', () => {
+  const mintShirt: Garment = {
+    id: 'mint_shirt',
+    name: 'Mint Green Button-Down Shirt',
+    category: 'tops',
+    subCategory: 'Casual Button-Down',
+    imageUrl: '/test/mint.jpg',
+    primaryColor: 'Mint Green',
+    colorHex: '#94D3C6',
+    secondaryColors: [],
+    undertone: 'Cool',
+    fabric: 'Cotton poplin weave',
+    fabricWeight: 'Lightweight',
+    texture: 'Smooth matte finish',
+    fit: 'Tailored slim',
+    silhouette: 'Structured button-down',
+    pattern: 'Solid',
+    formality: 4,
+    seasons: ['Spring', 'Summer'],
+    occasions: ['Everyday', 'Smart Casual'],
+    stylingNotes: 'Pair with white chinos or light-wash denim to maintain a clean, seasonal aesthetic.',
+    // Simulate legacy stale Firestore value that mis-tagged a button-down shirt as "Mid"
+    layeringRole: 'Mid',
+    wearCount: 0,
+    hasVector: true,
+    vectorSource: 'semantic-fallback',
+    createdAt: '2026-11-26T00:00:00Z',
+  };
+
+  // Bug 4: Casual Button-Down must canonically be "Base", NEVER "Mid"
+  assert.equal(getCanonicalLayerRole(mintShirt), 'Base');
+
+  const whiteChinos: Garment = {
+    id: 'white_chinos',
+    name: 'White Cotton Twill Chinos',
+    category: 'bottoms',
+    subCategory: 'Chinos',
+    imageUrl: '/test/white-chinos.jpg',
+    primaryColor: 'White',
+    colorHex: '#F4F4F0',
+    secondaryColors: [],
+    undertone: 'Neutral',
+    fabric: 'Lightweight cotton twill',
+    fabricWeight: 'Lightweight',
+    texture: 'Crisp matte twill',
+    fit: 'Tailored slim',
+    silhouette: 'Clean tapered chino',
+    pattern: 'Solid',
+    formality: 5,
+    seasons: ['Spring', 'Summer'],
+    occasions: ['Everyday', 'Smart Casual'],
+    stylingNotes: 'Clean warm-weather base trouser.',
+    layeringRole: 'Bottom',
+    wearCount: 0,
+    hasVector: true,
+    vectorSource: 'semantic-fallback',
+    createdAt: '2026-11-26T00:00:00Z',
+  };
+
+  const lightWashJeans: Garment = {
+    id: 'light_denim',
+    name: 'Light-Wash Straight Denim Jeans',
+    category: 'bottoms',
+    subCategory: 'Denim Jeans',
+    imageUrl: '/test/light-denim.jpg',
+    primaryColor: 'Light Blue',
+    colorHex: '#9CB7D1',
+    secondaryColors: [],
+    undertone: 'Cool',
+    fabric: 'Washed cotton denim',
+    fabricWeight: 'Midweight',
+    texture: 'Soft washed twill',
+    fit: 'Relaxed straight',
+    silhouette: 'Straight leg',
+    pattern: 'Solid',
+    formality: 4,
+    seasons: ['Spring', 'Summer'],
+    occasions: ['Everyday'],
+    stylingNotes: 'Relaxed light denim.',
+    layeringRole: 'Bottom',
+    wearCount: 0,
+    hasVector: true,
+    vectorSource: 'semantic-fallback',
+    createdAt: '2026-11-26T00:00:00Z',
+  };
+
+  const fadedBlackJeans: Garment = {
+    id: 'faded_black',
+    name: 'Faded Black Denim Jeans',
+    category: 'bottoms',
+    subCategory: 'Denim Jeans',
+    imageUrl: '/test/black-jeans.jpg',
+    primaryColor: 'Faded Black',
+    colorHex: '#2A2C2F',
+    secondaryColors: [],
+    undertone: 'Neutral',
+    fabric: 'Heavy cotton denim',
+    fabricWeight: 'Heavyweight',
+    texture: 'Washed denim',
+    fit: 'Tailored slim',
+    silhouette: 'Slim straight',
+    pattern: 'Solid',
+    formality: 4,
+    seasons: ['All-Season'],
+    occasions: ['Everyday', 'Smart Casual'],
+    stylingNotes: 'Dark casual denim.',
+    layeringRole: 'Bottom',
+    wearCount: 0,
+    hasVector: true,
+    vectorSource: 'semantic-fallback',
+    createdAt: '2026-11-26T00:00:00Z',
+  };
+
+  const rawIndigoJeans: Garment = {
+    id: 'raw_indigo',
+    name: 'Raw Indigo Denim Jeans',
+    category: 'bottoms',
+    subCategory: 'Denim Jeans',
+    imageUrl: '/test/raw-indigo.jpg',
+    primaryColor: 'Raw Indigo',
+    colorHex: '#1D2940',
+    secondaryColors: [],
+    undertone: 'Cool',
+    fabric: 'Heavy raw selvedge denim',
+    fabricWeight: 'Heavyweight',
+    texture: 'Rigid raw denim',
+    fit: 'Straight',
+    silhouette: 'Straight leg',
+    pattern: 'Solid',
+    formality: 4,
+    seasons: ['Autumn', 'Winter'],
+    occasions: ['Everyday'],
+    stylingNotes: 'Structured dark denim.',
+    layeringRole: 'Bottom',
+    wearCount: 0,
+    hasVector: true,
+    vectorSource: 'semantic-fallback',
+    createdAt: '2026-11-26T00:00:00Z',
+  };
+
+  const oliveChinos: Garment = {
+    id: 'olive_chinos',
+    name: 'Olive Cotton Twill Chinos',
+    category: 'bottoms',
+    subCategory: 'Chinos',
+    imageUrl: '/test/olive-chinos.jpg',
+    primaryColor: 'Olive',
+    colorHex: '#5E684C',
+    secondaryColors: [],
+    undertone: 'Warm',
+    fabric: 'Midweight cotton twill',
+    fabricWeight: 'Midweight',
+    texture: 'Matte twill',
+    fit: 'Tailored',
+    silhouette: 'Tapered chino',
+    pattern: 'Solid',
+    formality: 5,
+    seasons: ['Spring', 'Autumn', 'All-Season'],
+    occasions: ['Everyday', 'Smart Casual'],
+    stylingNotes: 'Earthy everyday chinos.',
+    layeringRole: 'Bottom',
+    wearCount: 0,
+    hasVector: true,
+    vectorSource: 'semantic-fallback',
+    createdAt: '2026-11-26T00:00:00Z',
+  };
+
+  // Bug 3A: Light pastel Mint Green must harmonize higher with White/Light Denim than stark Faded Black
+  assert.ok(
+    computeColorHarmony(mintShirt.colorHex, whiteChinos.colorHex) >
+      computeColorHarmony(mintShirt.colorHex, fadedBlackJeans.colorHex) + 10,
+    'Expected Mint + White harmony to strongly beat Mint + Faded Black'
+  );
+
+  // Scenario 1: Closet HAS white chinos & light-wash denim -> they MUST rank #1 and #2 above dark denim
+  const fullCloset = [mintShirt, fadedBlackJeans, rawIndigoJeans, oliveChinos, whiteChinos, lightWashJeans];
+  const fullVectors: Record<string, number[]> = {};
+  for (const g of fullCloset) fullVectors[g.id] = computeDeterministicVector(g);
+
+  const companionsWithLight = findBestCompanions(mintShirt.id, fullCloset, fullVectors, 4);
+  const topTwoIds = new Set(companionsWithLight.slice(0, 2).map((c) => c.garmentId));
+  assert.ok(
+    topTwoIds.has('white_chinos') && topTwoIds.has('light_denim'),
+    `Expected white_chinos and light_denim as top 2 pairings, got ${companionsWithLight.map((c) => `${c.garmentId}:${c.score}`).join(', ')}`
+  );
+  const blackMatch = companionsWithLight.find((c) => c.garmentId === 'faded_black');
+  assert.ok(
+    !blackMatch || blackMatch.score < 82,
+    `Expected heavy Faded Black Denim to NOT receive inflated 95-96% score with lightweight mint shirt, got ${blackMatch?.score}`
+  );
+
+  const guidanceWithLight = buildCrossVerifiedStylingGuidance(mintShirt, companionsWithLight, fullCloset);
+  assert.equal(guidanceWithLight.closetGapNote, null, 'Should have no closet gap when white chinos are owned');
+
+  // Scenario 2: Closet ONLY has dark/olive bottoms (exact screenshot scenario!)
+  // -> Guidance MUST NOT blindly say "Pair with white chinos" without reconciling; it must align with owned Best Pairings and call out the closet gap honestly
+  const darkOnlyCloset = [mintShirt, fadedBlackJeans, oliveChinos, rawIndigoJeans];
+  const darkVectors: Record<string, number[]> = {};
+  for (const g of darkOnlyCloset) darkVectors[g.id] = computeDeterministicVector(g);
+
+  const companionsDarkOnly = findBestCompanions(mintShirt.id, darkOnlyCloset, darkVectors, 3);
+  assert.equal(
+    companionsDarkOnly[0].garmentId,
+    'olive_chinos',
+    `Expected midweight Olive Chinos to rank above heavy dark denim, got ${companionsDarkOnly.map((c) => `${c.garmentId}:${c.score}`).join(', ')}`
+  );
+
+  const guidanceDarkOnly = buildCrossVerifiedStylingGuidance(mintShirt, companionsDarkOnly, darkOnlyCloset);
+  assert.ok(
+    guidanceDarkOnly.primaryGuidance.includes('Olive Cotton Twill Chinos'),
+    `Expected cross-verified guidance to reference top owned pairing, got: ${guidanceDarkOnly.primaryGuidance}`
+  );
+  assert.ok(
+    guidanceDarkOnly.primaryGuidance.includes('Base layer'),
+    `Expected guidance to reflect canonical Base layer role, got: ${guidanceDarkOnly.primaryGuidance}`
+  );
+  assert.ok(
+    guidanceDarkOnly.closetGapNote && /white\/stone chinos|light-wash denim/i.test(guidanceDarkOnly.closetGapNote),
+    `Expected transparent closet gap note when light bottoms are missing, got: ${guidanceDarkOnly.closetGapNote}`
   );
 });
 

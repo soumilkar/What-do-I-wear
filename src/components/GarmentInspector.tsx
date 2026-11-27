@@ -1,6 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { RefreshCw, Save, Trash2, X } from 'lucide-react';
 import type { CompanionMatch, Garment, GarmentCategory } from '../types/styling';
+import {
+  buildCrossVerifiedStylingGuidance,
+  getCanonicalLayerRole,
+} from '../utils/styleEngine';
 import { SmartImage } from './SmartImage';
 
 interface GarmentInspectorProps {
@@ -67,7 +71,14 @@ export function GarmentInspector({
     return () => window.removeEventListener('keydown', onKey);
   }, [garment, onClose]);
 
+  const crossVerifiedGuidance = useMemo(() => {
+    if (!garment) return null;
+    return buildCrossVerifiedStylingGuidance(garment, companions, allGarments);
+  }, [garment, companions, allGarments]);
+
   if (!garment) return null;
+
+  const canonicalRole = getCanonicalLayerRole(garment);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -118,9 +129,9 @@ export function GarmentInspector({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-[560px] bg-white h-full overflow-y-auto shadow-2xl flex flex-col">
-        {/* Sticky Sheet Header */}
-        <div className="sticky top-0 z-10 apple-glass border-b border-black/[0.06] px-6 py-4 flex items-center justify-between gap-4">
+      <div className="w-full max-w-[560px] bg-white h-full overflow-hidden shadow-2xl flex flex-col">
+        {/* Solid Opaque Sheet Header — prevents scrolled content bleed-through */}
+        <div className="shrink-0 z-20 bg-white border-b border-black/[0.08] px-6 py-4 flex items-center justify-between gap-4">
           <div className="min-w-0">
             <p className="text-[12px] text-[#6E6E73] capitalize">
               {garment.category} · {garment.subCategory}
@@ -139,7 +150,7 @@ export function GarmentInspector({
           </button>
         </div>
 
-        <div className="p-6 space-y-8 flex-1">
+        <div className="p-6 space-y-8 flex-1 min-h-0 overflow-y-auto">
           {/* Studio Preview */}
           <div className="aspect-[4/4] max-h-[360px] w-full rounded-2xl overflow-hidden bg-[#ECECE6]">
             <SmartImage
@@ -335,7 +346,7 @@ export function GarmentInspector({
                   <div>
                     <dt className="text-[12px] text-[#6E6E73]">Formality & Layer Role</dt>
                     <dd className="mt-0.5 font-medium text-[#1D1D1F] tabular-nums">
-                      {garment.formality}/10 · {garment.layeringRole}
+                      {garment.formality}/10 · {canonicalRole}
                     </dd>
                   </div>
                   <div>
@@ -352,11 +363,16 @@ export function GarmentInspector({
                   </div>
                 </dl>
 
-                <div>
+                <div className="space-y-2.5">
                   <p className="text-[12px] text-[#6E6E73]">Styling Guidance</p>
-                  <p className="mt-1 text-[14px] leading-[1.6] text-[#1D1D1F]">
-                    {garment.stylingNotes}
+                  <p className="text-[14px] leading-[1.6] text-[#1D1D1F]">
+                    {crossVerifiedGuidance?.primaryGuidance || garment.stylingNotes}
                   </p>
+                  {crossVerifiedGuidance?.closetGapNote && (
+                    <p className="text-[12.5px] leading-[1.55] text-[#6E6E73] bg-[#F5F5F7] rounded-xl px-3.5 py-2.5 border border-black/[0.05]">
+                      {crossVerifiedGuidance.closetGapNote}
+                    </p>
+                  )}
                 </div>
               </section>
 
@@ -414,7 +430,7 @@ export function GarmentInspector({
         </div>
 
         {/* Footer Danger Action */}
-        <div className="px-6 py-4 border-t border-black/[0.06] flex items-center justify-between text-[12px] text-[#6E6E73]">
+        <div className="shrink-0 bg-white px-6 py-4 border-t border-black/[0.08] flex items-center justify-between text-[12px] text-[#6E6E73]">
           <span className="tabular-nums">Worn {garment.wearCount} times</span>
           <button
             type="button"

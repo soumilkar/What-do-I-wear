@@ -186,11 +186,15 @@ export function BatchUploadModal({
                   fileName: photo.file.name,
                 }),
               },
-              { retries: 3, retryDelayMs: 900 }
+              { retries: 1, retryDelayMs: 1200 }
             );
 
             if (!data.analyzed) {
-              throw new Error(data.error || `Failed to inspect ${photo.file.name}.`);
+              const fallbackReason =
+                typeof data.error === 'string' && data.error.trim()
+                  ? data.error.trim()
+                  : `Failed to inspect ${photo.file.name}.`;
+              throw new Error(fallbackReason);
             }
 
             pendingSaveBuffer.push({
@@ -279,9 +283,9 @@ export function BatchUploadModal({
         if (e.target === e.currentTarget && !uploading) onClose();
       }}
     >
-      <div className="w-full max-w-[680px] max-h-[88vh] bg-white rounded-[26px] shadow-2xl overflow-hidden flex flex-col">
+      <div className="w-full max-w-[680px] max-h-[88svh] bg-white rounded-[26px] shadow-2xl overflow-hidden flex flex-col">
         {/* Modal Header */}
-        <div className="px-6 py-5 border-b border-black/[0.06] flex items-center justify-between gap-4">
+        <div className="shrink-0 bg-white px-5 sm:px-6 py-4 sm:py-5 border-b border-black/[0.06] flex items-center justify-between gap-4">
           <div>
             <h2 className="text-[20px] font-semibold tracking-[-0.02em] text-[#1D1D1F]">
               Add Clothes
@@ -302,7 +306,7 @@ export function BatchUploadModal({
         </div>
 
         {/* Modal Body */}
-        <div className="p-6 overflow-y-auto space-y-5 flex-1">
+        <div className="p-5 sm:p-6 overflow-y-auto space-y-5 flex-1 min-h-0">
           <input
             ref={inputRef}
             type="file"
@@ -326,7 +330,7 @@ export function BatchUploadModal({
               setDragging(false);
               addFiles(e.dataTransfer.files);
             }}
-            className={`rounded-2xl border border-dashed p-8 text-center transition-colors ${
+            className={`rounded-2xl border border-dashed p-6 sm:p-8 text-center transition-colors ${
               dragging
                 ? 'border-[#0071E3] bg-[#0071E3]/[0.04]'
                 : 'border-black/[0.14] bg-[#F5F5F7]/65'
@@ -422,7 +426,7 @@ export function BatchUploadModal({
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-4 border-t border-black/[0.06] bg-[#FAFAFC] flex items-center justify-end gap-2.5">
+        <div className="shrink-0 px-5 sm:px-6 py-4 border-t border-black/[0.06] bg-[#FAFAFC] flex items-center justify-end gap-2.5">
           <div className="flex items-center justify-end gap-2.5 shrink-0">
             <button
               type="button"

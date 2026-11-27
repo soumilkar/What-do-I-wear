@@ -523,6 +523,7 @@ export async function analyzeGarmentWithAI(
   * Belts, watches, bags, scarves, hats, jewelry -> layeringRole: "Accent"
 - STRICT season accuracy: NEVER tag wool/cashmere/merino sweaters, hoodies, fleeces, heavy knits, corduroy, flannel, or winter coats as "Summer" or "All-Season" — tag them accurately as ["Autumn", "Winter"] (or ["Spring", "Autumn", "Winter"] for light cotton knits).
 - Calibrate formality accurately: 1-2=gym/loungewear, 3-4=graphic tee/hoodie/joggers, 5=everyday denim/casual knit, 6-7=smart casual shirt/chinos/loafers/overshirt, 8=tailored blazer/pleated wool trousers, 9-10=formal suiting/black-tie.
+- For stylingNotes: write ONE crisp sentence about this garment's own drape, temperature range, and layering versatility (e.g., worn standalone or layered as a Base/Mid piece) — do NOT prescribe a specific unowned bottom/shoe color that may not exist in the user's closet.
 - Keep every field concise, accurate, and high-signal for outfit matching.`;
 
   const res = await executeWithModelHierarchy(tiers, async (tier) => {
@@ -558,7 +559,7 @@ export async function analyzeGarmentWithAI(
             formality: { type: Type.INTEGER, description: 'Integer 1-10' },
             seasons: { type: Type.ARRAY, items: { type: Type.STRING } },
             occasions: { type: Type.ARRAY, items: { type: Type.STRING } },
-            stylingNotes: { type: Type.STRING, description: 'One crisp sentence on best pairing/drape' },
+            stylingNotes: { type: Type.STRING, description: 'One crisp sentence on drape, temperature range, and layering versatility (avoid prescribing specific unowned companion pieces)' },
             layeringRole: { type: Type.STRING, description: 'Base, Mid, Outer, Bottom, Footwear, or Accent' },
           },
           required: [

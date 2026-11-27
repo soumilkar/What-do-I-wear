@@ -200,10 +200,15 @@ export function hexToHsl(hex: string): { h: number; s: number; l: number } {
   return { h: Math.round(h), s: Math.round(s * 100), l: Math.round(l * 100) };
 }
 
+function isLightPastel(c: OklchColor): boolean {
+  return !isPerceptualNeutral(c) && c.L >= 0.7 && c.C >= 0.036 && c.C <= 0.19;
+}
+
 /**
  * Perceptually calibrated OKLCH fashion color harmony (0-100) between two garment hex colors.
  * Guards against accidental near-match dark clashes (e.g. black + near-black navy),
- * rewards editorial neutral/earth anchors, tonal stepping, analogous, and balanced complementary pairs.
+ * rewards airy light-on-light pastel harmony (e.g. mint + white/stone/light denim) over harsh black contrast,
+ * and rewards editorial neutral/earth anchors, tonal stepping, analogous, and balanced complementary pairs.
  */
 export function computeColorHarmony(hexA: string, hexB: string): number {
   const a = hexToOklch(hexA);
@@ -213,6 +218,8 @@ export function computeColorHarmony(hexA: string, hexB: string): number {
   const bNeutral = isPerceptualNeutral(b);
   const aEarth = isEarthNeutral(a);
   const bEarth = isEarthNeutral(b);
+  const aPastel = isLightPastel(a);
+  const bPastel = isLightPastel(b);
 
   const lumDiff = Math.abs(a.L - b.L);
   const deltaE = oklchDeltaE(a, b);
@@ -233,7 +240,15 @@ export function computeColorHarmony(hexA: string, hexB: string): number {
 
   // One pure neutral + one chromatic/earth tone: foundational editorial anchor
   if (aNeutral || bNeutral) {
+    const neutral = aNeutral ? a : b;
     const chrom = aNeutral ? b : a;
+    // Light airy pastels (mint, sky, blush, butter) harmonize best with light/stone neutrals
+    // rather than stark jet black or heavy faded black contrast.
+    if (isLightPastel(chrom)) {
+      if (neutral.L >= 0.72) return 95; // White, ivory, ecru, stone, light grey
+      if (neutral.L >= 0.44) return 88; // Medium grey, taupe, soft slate
+      return 78; // Stark dark charcoal / black creates harsh seasonal contrast
+    }
     const chromaPenalty = chrom.C > 0.24 ? -3 : 0; // Ultra-neon slightly harder to anchor
     return Math.min(96, Math.max(76, Math.round(86 + Math.min(0.5, lumDiff) * 18 + chromaPenalty)));
   }
@@ -245,7 +260,19 @@ export function computeColorHarmony(hexA: string, hexB: string): number {
 
   // One earth-neutral + one chromatic piece
   if (aEarth || bEarth) {
+    const earth = aEarth ? a : b;
+    const other = aEarth ? b : a;
+    if (isLightPastel(other)) {
+      if (earth.L >= 0.62) return 93; // Light sand, khaki, stone, warm cream-beige
+      if (earth.L >= 0.42) return 86; // Olive, mid-camel, soft brown
+      return 80; // Very dark raw indigo / espresso creates heavy visual weight contrast
+    }
     return Math.min(93, Math.round(83 + Math.min(0.4, lumDiff) * 16));
+  }
+
+  // Airy pastel + light-wash analogous tone (e.g. mint green + light-wash denim)
+  if ((aPastel || bPastel) && a.L >= 0.66 && b.L >= 0.66 && hueDiff <= 85) {
+    return 92;
   }
 
   // Two chromatic garments — judge by perceptual OKLCH hue & chroma balance
@@ -472,6 +499,32 @@ export function classifyTopLayerRole(garment: Garment): 'base' | 'mid' {
     return 'mid';
   }
   return 'base';
+}
+
+/**
+ * Returns the canonical UI & styling layeringRole for any garment, correcting stale
+ * legacy AI tags (e.g., a casual button-down shirt mistakenly saved as "Mid" -> "Base").
+ */
+export function getCanonicalLayerRole(
+  garment: Pick<
+    Garment,
+    'category' | 'name' | 'subCategory' | 'silhouette' | 'texture' | 'fabric' | 'fabricWeight' | 'layeringRole'
+  >
+): Garment['layeringRole'] {
+  switch (garment.category) {
+    case 'tops':
+      return classifyTopLayerRole(garment as Garment) === 'mid' ? 'Mid' : 'Base';
+    case 'outerwear':
+      return 'Outer';
+    case 'bottoms':
+      return 'Bottom';
+    case 'footwear':
+      return 'Footwear';
+    case 'accessories':
+      return 'Accent';
+    default:
+      return garment.layeringRole || 'Base';
+  }
 }
 
 /**
@@ -988,6 +1041,14 @@ export function computeTasteCentroid(
 // 4. PAIRWISE & DEEP 12-SEASON PERSONAL FLATTERY SCORING
 // ============================================================================
 
+function isWarmWeatherAiryPiece(garment: Garment): boolean {
+  const hasWarmSeason =
+    garment.seasons.includes('Summer') || garment.seasons.includes('Spring');
+  const hasColdSeason =
+    garment.seasons.includes('Winter') || garment.seasons.includes('Autumn');
+  return garment.fabricWeight === 'Lightweight' && hasWarmSeason && !hasColdSeason;
+}
+
 export function scorePairCompatibility(
   itemA: Garment,
   itemB: Garment,
@@ -995,17 +1056,23 @@ export function scorePairCompatibility(
   vecB?: number[]
 ): { score: number; vectorSimilarity: number; colorHarmony: number; reason: string } {
   const colorHarmony = computeColorHarmony(itemA.colorHex, itemB.colorHex);
+  const oklchA = hexToOklch(itemA.colorHex);
+  const oklchB = hexToOklch(itemB.colorHex);
 
   const formalityDiff = Math.abs(itemA.formality - itemB.formality);
   const formalityScore = Math.max(35, 100 - formalityDiff * 11);
 
+  const explicitSharedSeasons = itemA.seasons.filter(
+    (s) => s !== 'All-Season' && itemB.seasons.includes(s)
+  );
   const sharedSeasons = itemA.seasons.filter(
     (s) =>
       itemB.seasons.includes(s) ||
       itemA.seasons.includes('All-Season') ||
       itemB.seasons.includes('All-Season')
   );
-  const seasonScore = sharedSeasons.length > 0 ? 94 : 60;
+  const seasonScore =
+    explicitSharedSeasons.length > 0 ? 96 : sharedSeasons.length > 0 ? 86 : 58;
 
   // Pattern balance: avoid clashing two busy prints
   const aSolid =
@@ -1030,30 +1097,81 @@ export function scorePairCompatibility(
   const famB = classifyFabricFamily(itemB);
   const matDelta = MATERIAL_PAIR_DELTA[famA]?.[famB] ?? (famA !== famB ? 2 : 0);
 
-  const score = Math.min(
-    97,
-    Math.max(
-      40,
-      Math.round(
-        colorHarmony * 0.3 +
-          vectorSimilarity * 0.27 +
-          formalityScore * 0.23 +
-          seasonScore * 0.1 +
-          patternScore * 0.1 +
-          matDelta * 0.6
-      )
-    )
-  );
+  // Seasonal & fabric-weight realism adjustment
+  const wA = FABRIC_WEIGHT_RANK[itemA.fabricWeight] ?? 2;
+  const wB = FABRIC_WEIGHT_RANK[itemB.fabricWeight] ?? 2;
+  const isOuterwearLayering =
+    itemA.category === 'outerwear' || itemB.category === 'outerwear';
+  let thermalWeightDelta = 0;
+
+  if (!isOuterwearLayering && Math.abs(wA - wB) >= 2) {
+    // e.g. Lightweight summer poplin shirt paired with Heavyweight raw denim or heavy winter wool
+    thermalWeightDelta -= 8;
+  }
+
+  const aWarmAiry = isWarmWeatherAiryPiece(itemA);
+  const bWarmAiry = isWarmWeatherAiryPiece(itemB);
+  if (aWarmAiry !== bWarmAiry) {
+    const airy = aWarmAiry ? itemA : itemB;
+    const partner = aWarmAiry ? itemB : itemA;
+    const partnerOklch = aWarmAiry ? oklchB : oklchA;
+    const airyOklch = aWarmAiry ? oklchA : oklchB;
+
+    if (isSummerUnsuitable(partner)) {
+      thermalWeightDelta -= 12;
+    } else if (
+      isLightPastel(airyOklch) &&
+      partnerOklch.L < 0.36 &&
+      partner.fabricWeight !== 'Lightweight'
+    ) {
+      // Heavy dark black/raw indigo bottoms visually weigh down airy Spring/Summer pastel shirts
+      thermalWeightDelta -= 6;
+    } else if (
+      isLightPastel(airyOklch) &&
+      partnerOklch.L >= 0.68 &&
+      partner.fabricWeight !== 'Heavyweight'
+    ) {
+      // Crisp light neutral / light-wash warm-weather partner
+      thermalWeightDelta += 4;
+    }
+  } else if (aWarmAiry && bWarmAiry) {
+    thermalWeightDelta += 4;
+  }
+
+  const rawScore =
+    colorHarmony * 0.34 +
+    vectorSimilarity * 0.24 +
+    formalityScore * 0.22 +
+    seasonScore * 0.12 +
+    patternScore * 0.08 +
+    matDelta * 0.6 +
+    thermalWeightDelta;
+
+  const score = Math.min(97, Math.max(40, Math.round(rawScore)));
 
   const reasons: string[] = [];
-  if (colorHarmony >= 88) {
-    reasons.push(`balanced ${itemA.primaryColor.toLowerCase()} & ${itemB.primaryColor.toLowerCase()} contrast`);
+  if (colorHarmony >= 91 && oklchA.L >= 0.66 && oklchB.L >= 0.66) {
+    reasons.push('crisp light tonal harmony');
+  } else if (colorHarmony >= 88) {
+    reasons.push(
+      `balanced ${itemA.primaryColor.toLowerCase()} & ${itemB.primaryColor.toLowerCase()} pairing`
+    );
+  } else if (colorHarmony < 82) {
+    reasons.push(
+      `high-contrast ${itemA.primaryColor.toLowerCase()} & ${itemB.primaryColor.toLowerCase()} anchor`
+    );
   }
-  if (matDelta >= 5) {
+
+  if (aWarmAiry && bWarmAiry) {
+    reasons.push('matching lightweight season');
+  } else if (thermalWeightDelta <= -8) {
+    reasons.push('heavier fabric contrast');
+  } else if (matDelta >= 5) {
     reasons.push(`${famA}-on-${famB} texture depth`);
   } else if (formalityDiff <= 2) {
     reasons.push('aligned formality');
   }
+
   if (reasons.length === 0) reasons.push('cohesive silhouette pairing');
 
   return {
@@ -1273,22 +1391,184 @@ export function findBestCompanions(
       const res = scorePairCompatibility(target, other, targetVec, otherVec);
       const propScore = evaluateProportionAndLayering([target, other]).score;
       const personalFit = profile ? scoreGarmentForPerson(other, profile) : res.score;
+      // Keep direct pair compatibility dominant so personalFit never inflates a mismatched dark/heavy companion to 96%
       const blendedScore = profile
-        ? Math.min(98, Math.round(res.score * 0.64 + propScore * 0.16 + personalFit * 0.2))
-        : Math.min(98, Math.round(res.score * 0.8 + propScore * 0.2));
+        ? Math.min(97, Math.round(res.score * 0.72 + propScore * 0.14 + personalFit * 0.14))
+        : Math.min(97, Math.round(res.score * 0.84 + propScore * 0.16));
       return {
         garmentId: other.id,
         score: blendedScore,
         vectorSimilarity: res.vectorSimilarity,
         colorHarmony: res.colorHarmony,
         reason:
-          profile && personalFit >= 86
+          profile && personalFit >= 86 && res.colorHarmony >= 85
             ? `${res.reason} · flatters your palette`
             : res.reason,
       };
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
+}
+
+export interface CrossVerifiedGuidance {
+  primaryGuidance: string;
+  closetGapNote: string | null;
+}
+
+const LIGHT_PRESCRIPTION_REGEX =
+  /\b(white|ivory|cream|ecru|off[- ]?white|stone|beige|sand|khaki|pale|light[- ]?wash|light[- ]?colored?|light\s+(chinos?|trousers?|pants?|denim|jeans))\b/i;
+
+const DARK_PRESCRIPTION_REGEX =
+  /\b(black|charcoal|dark[- ]?wash|dark\s+(denim|jeans|trousers?|chinos?|pants?)|raw\s+indigo|midnight\s+navy)\b/i;
+
+function isLightColoredGarment(g: Garment): boolean {
+  const l = hexToOklch(g.colorHex).L;
+  if (l >= 0.68) return true;
+  return /\b(white|ivory|cream|ecru|stone|beige|sand|light[- ]?wash|off[- ]?white|khaki|oat|bone)\b/i.test(
+    `${g.primaryColor} ${g.name}`
+  );
+}
+
+function isDarkColoredGarment(g: Garment): boolean {
+  const l = hexToOklch(g.colorHex).L;
+  if (l <= 0.36) return true;
+  return /\b(black|charcoal|dark|raw\s+indigo|jet|obsidian|midnight)\b/i.test(
+    `${g.primaryColor} ${g.name}`
+  );
+}
+
+/**
+ * Cross-verifies a garment's Styling Guidance against its actual Best Pairings and the user's
+ * real owned wardrobe so the Inspector NEVER tells the user to wear "white chinos" while
+ * recommending "Faded Black Denim" right underneath without reconciling the two.
+ */
+export function buildCrossVerifiedStylingGuidance(
+  garment: Garment,
+  companions: CompanionMatch[],
+  allGarments: Garment[]
+): CrossVerifiedGuidance {
+  const canonicalRole = getCanonicalLayerRole(garment);
+  const rawNotes = (garment.stylingNotes || '').trim();
+
+  const resolvedCompanions = companions
+    .map((m) => ({
+      match: m,
+      item: allGarments.find((g) => g.id === m.garmentId) ?? null,
+    }))
+    .filter((entry): entry is { match: CompanionMatch; item: Garment } => Boolean(entry.item));
+
+  const topItems = resolvedCompanions.map((r) => r.item);
+  const topNames = topItems.slice(0, 2).map((i) => i.name);
+
+  if (topItems.length === 0) {
+    return {
+      primaryGuidance:
+        rawNotes ||
+        `Wear as a ${canonicalRole.toLowerCase()} piece for ${garment.seasons.join(' / ')} ${garment.occasions[0]?.toLowerCase() || 'everyday'} outfits.`,
+      closetGapNote: null,
+    };
+  }
+
+  const notesPrescribeLight = LIGHT_PRESCRIPTION_REGEX.test(rawNotes);
+  const notesPrescribeDark = DARK_PRESCRIPTION_REGEX.test(rawNotes);
+  const hasLightInTop = topItems.some(isLightColoredGarment);
+  const hasDarkInTop = topItems.some(isDarkColoredGarment);
+
+  // Detect real contradiction: upload-time notes prescribe light bottoms/companions,
+  // while top matched owned pairings are darker/earth pieces because light bottoms aren't in the closet
+  const lightContradiction = notesPrescribeLight && !hasLightInTop;
+  const darkContradiction = notesPrescribeDark && !hasDarkInTop && hasLightInTop;
+
+  const targetOklch = hexToOklch(garment.colorHex);
+  const airyPastelTop =
+    garment.category === 'tops' &&
+    isLightPastel(targetOklch) &&
+    isWarmWeatherAiryPiece(garment);
+  const ownedLightBottoms = allGarments.filter(
+    (g) => g.category === 'bottoms' && isLightColoredGarment(g)
+  );
+
+  // Mid-layer sweater/cardigan/hoodie underlayer cross-check
+  const isMidLayerTop = garment.category === 'tops' && canonicalRole === 'Mid';
+  const ownedBaseTops = allGarments.filter(
+    (g) => g.category === 'tops' && g.id !== garment.id && classifyTopLayerRole(g) === 'base'
+  );
+
+  if (isMidLayerTop) {
+    const compatibleBases = ownedBaseTops
+      .map((base) => ({ base, eval: evaluateBaseUnderMidCompatibility(base, garment) }))
+      .filter((entry) => entry.eval.compatible)
+      .sort((a, b) => b.eval.score - a.eval.score);
+
+    if (compatibleBases.length > 0) {
+      const bestBase = compatibleBases[0].base.name;
+      const companionTail =
+        topNames.length > 0 ? ` and finish with ${topNames.join(' or ')}` : '';
+      return {
+        primaryGuidance: `Layer as a Mid piece over your ${bestBase}${companionTail}.`,
+        closetGapNote: null,
+      };
+    }
+
+    return {
+      primaryGuidance: `Wear as a Mid layer${topNames.length > 0 ? ` alongside your ${topNames.join(' or ')}` : ''}.`,
+      closetGapNote:
+        'Underlayer gap: You do not have a compatible lightweight base shirt or tee uploaded yet to wear underneath this knit.',
+    };
+  }
+
+  if (lightContradiction || (airyPastelTop && ownedLightBottoms.length === 0)) {
+    const seasonPhrase = garment.seasons.slice(0, 2).join('/');
+    const pairPhrase =
+      topNames.length >= 2
+        ? `${topNames[0]} or ${topNames[1]}`
+        : topNames[0];
+    const stylingTip =
+      garment.category === 'tops'
+        ? ' Roll cuffs slightly or keep the front untucked/half-tucked to keep the lighter top balanced against deeper bottoms.'
+        : '';
+
+    return {
+      primaryGuidance: `Wear as a ${canonicalRole} layer in ${seasonPhrase}. From your current wardrobe, your strongest pairings are ${pairPhrase}.${stylingTip}`,
+      closetGapNote:
+        'Closet gap: You do not have white/stone chinos or light-wash denim uploaded yet—adding a light neutral bottom would unlock an even crisper warm-weather pairing.',
+    };
+  }
+
+  if (darkContradiction) {
+    const pairPhrase =
+      topNames.length >= 2
+        ? `${topNames[0]} or ${topNames[1]}`
+        : topNames[0];
+    return {
+      primaryGuidance: `Wear as a ${canonicalRole} piece; from your current closet, it pairs most naturally with your ${pairPhrase}.`,
+      closetGapNote:
+        'Closet gap: Adding dark charcoal trousers or dark-wash denim would also give this piece a sharper high-contrast anchor.',
+    };
+  }
+
+  // No contradiction: keep crisp garment note and anchor it to actual top owned pairings if note is generic
+  const mentionsOwnedName = topItems.some((item) =>
+    rawNotes.toLowerCase().includes(item.primaryColor.toLowerCase())
+  );
+  if (rawNotes && (!notesPrescribeLight || hasLightInTop) && (!notesPrescribeDark || hasDarkInTop)) {
+    if (mentionsOwnedName) {
+      return { primaryGuidance: rawNotes, closetGapNote: null };
+    }
+    const pairPhrase =
+      topNames.length >= 2 ? `${topNames[0]} or ${topNames[1]}` : topNames[0];
+    return {
+      primaryGuidance: `${rawNotes} From your closet, best paired with your ${pairPhrase}.`,
+      closetGapNote: null,
+    };
+  }
+
+  const pairPhrase =
+    topNames.length >= 2 ? `${topNames[0]} or ${topNames[1]}` : topNames[0];
+  return {
+    primaryGuidance: `Wear as a ${canonicalRole} piece in ${garment.seasons.slice(0, 2).join('/')}, paired from your closet with ${pairPhrase}.`,
+    closetGapNote: null,
+  };
 }
 
 // ============================================================================

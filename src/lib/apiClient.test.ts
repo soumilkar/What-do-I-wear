@@ -1,57 +1,96 @@
-import assert from 'node:assert/strict';
 import test from 'node:test';
-import { apiJson } from './apiClient.ts';
+import assert from 'node:assert/strict';
+import { apiJson, extractApiErrorMessage } from './apiClient';
 
-test('apiJson retries transient <!doctype html> proxy responses and succeeds on recovery', async () => {
+test('extractApiErrorMessage handles string errors, nested Vercel error objects, and fallback messages safely', () => {
+  assert.equal(extractApiErrorMessage({ error: '  Bad image format  ' }), 'Bad image format');
+  assert.equal(
+    extractApiErrorMessage({
+      error: { code: 'FUNCTION_INVOCATION_TIMEOUT', message: 'Timed out' },
+    }),
+    'The styling server timed out while processing this photo. Please try again.'
+  );
+  assert.equal(
+    extractApiErrorMessage({
+      error: { message: 'Upstream quota exceeded' },
+    }),
+    'Upstream quota exceeded'
+  );
+  assert.equal(
+    extractApiErrorMessage({
+      error: { code: 'CUSTOM_502' },
+    }),
+    'Styling server error (CUSTOM_502).'
+  );
+  assert.equal(extractApiErrorMessage({ message: 'Top-level message' }), 'Top-level message');
+  assert.equal(extractApiErrorMessage({ error: 12345 }), null);
+  assert.equal(extractApiErrorMessage(null), null);
+});
+
+test('apiJson handles object-shaped error responses without throwing trim TypeError or wasting retries on 500/400', async () => {
   const originalFetch = globalThis.fetch;
   let calls = 0;
 
-  globalThis.fetch = (async () => {
-    calls += 1;
-    if (calls === 1) {
-      return new Response('<!doctype html><html><body>502 Bad Gateway</body></html>', {
-        status: 502,
-        headers: { 'content-type': 'text/html' },
-      });
-    }
-    return new Response(JSON.stringify({ ok: true, count: 45 }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  }) as typeof fetch;
-
   try {
-    const res = await apiJson<{ ok: boolean; count: number }>(
-      '/api/ai/analyze-garment',
-      { method: 'POST', body: '{}' },
-      { retries: 2, retryDelayMs: 5 }
-    );
-    assert.equal(calls, 2);
-    assert.equal(res.ok, true);
-    assert.equal(res.count, 45);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
+    // Case 1: Vercel-style nested error object with HTTP 500 -> must NOT throw trim error and must NOT retry 500
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: 'FUNCTION_INVOCATION_FAILED',
+            message: 'Serverless function crashed while parsing photo.',
+          },
+        }),
+        { status: 500, headers: { 'content-type': 'application/json' } }
+      );
+    }) as typeof fetch;
 
-test('apiJson turns persistent HTML error responses into clean messages instead of JSON syntax errors', async () => {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () =>
-    new Response('<!doctype html><html><body>Gateway Timeout</body></html>', {
-      status: 504,
-      headers: { 'content-type': 'text/html' },
-    })) as typeof fetch;
-
-  try {
     await assert.rejects(
-      () => apiJson('/api/ai/analyze-garment', { method: 'POST' }, { retries: 1, retryDelayMs: 5 }),
-      (err: unknown) => {
-        assert.ok(err instanceof Error);
-        assert.doesNotMatch(err.message, /Unexpected token/i);
-        assert.match(err.message, /HTTP 504/i);
-        return true;
-      }
+      () => apiJson('/api/ai/analyze-garment', { method: 'POST' }, { retries: 2, retryDelayMs: 5 }),
+      /Serverless function crashed while parsing photo\./
     );
+    assert.equal(calls, 1, 'Expected 0 wasted retries on hard HTTP 500 JSON error');
+
+    // Case 2: HTTP 400 validation error -> 0 retries
+    calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ error: 'Missing image payload' }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    await assert.rejects(
+      () => apiJson('/api/ai/analyze-garment', { method: 'POST' }, { retries: 2, retryDelayMs: 5 }),
+      /Missing image payload/
+    );
+    assert.equal(calls, 1, 'Expected 0 retries on HTTP 400');
+
+    // Case 3: Transient HTTP 504 timeout -> retries once and succeeds
+    calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(
+          JSON.stringify({ error: { code: 'FUNCTION_INVOCATION_TIMEOUT', message: 'Timeout' } }),
+          { status: 504, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const result = await apiJson<{ ok: boolean }>(
+      '/api/ai/analyze-garment',
+      { method: 'POST' },
+      { retries: 1, retryDelayMs: 5 }
+    );
+    assert.equal(result.ok, true);
+    assert.equal(calls, 2, 'Expected exactly 1 retry after transient HTTP 504');
   } finally {
     globalThis.fetch = originalFetch;
   }

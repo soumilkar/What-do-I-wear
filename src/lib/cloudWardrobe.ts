@@ -31,6 +31,7 @@ import {
   computeDeterministicVector,
   evaluateOutfitLocalHarmony,
   findBestCompanions,
+  getCanonicalLayerRole,
 } from '../utils/styleEngine';
 import { db, handleFirestoreError, OperationType } from './firebase';
 
@@ -236,7 +237,13 @@ function buildGarmentFirestoreDoc(
   const category = matchEnum(garment.category, VALID_CATEGORIES, 'tops');
   const undertone = matchEnum(garment.undertone, VALID_UNDERTONES, 'Neutral');
   const fabricWeight = matchEnum(garment.fabricWeight, VALID_WEIGHTS, 'Midweight');
-  const layeringRole = matchEnum(garment.layeringRole, VALID_ROLES, 'Base');
+  const rawLayeringRole = matchEnum(garment.layeringRole, VALID_ROLES, 'Base');
+  const layeringRole = getCanonicalLayerRole({
+    ...garment,
+    category,
+    fabricWeight,
+    layeringRole: rawLayeringRole,
+  });
   const colorHex = /^#[0-9A-Fa-f]{6}$/.test(garment.colorHex || '') ? garment.colorHex : '#6E6E73';
   const seasons = sanitizeStringList(garment.seasons, 5, 30);
   const occasions = sanitizeStringList(garment.occasions, 6, 30);
@@ -503,6 +510,7 @@ export function subscribeUserWorkspace(
           modelUsed: typeof d.modelUsed === 'string' ? d.modelUsed : undefined,
           createdAt: toIsoString(d.createdAt),
         };
+        item.layeringRole = getCanonicalLayerRole(item);
         nextGarments.push(item);
         nextVectors[item.id] =
           Array.isArray(d.vector) && d.vector.length > 0
@@ -748,7 +756,12 @@ export async function reanalyzeGarmentInCloud(
     seasons: seasons.length > 0 ? seasons : ['All-Season'],
     occasions: occasions.length > 0 ? occasions : ['Smart Casual'],
     stylingNotes: clampString(analyzed.stylingNotes, 300, ''),
-    layeringRole: matchEnum(analyzed.layeringRole, VALID_ROLES, 'Base'),
+    layeringRole: getCanonicalLayerRole({
+      ...analyzed,
+      category: matchEnum(analyzed.category, VALID_CATEGORIES, 'tops'),
+      fabricWeight: matchEnum(analyzed.fabricWeight, VALID_WEIGHTS, 'Midweight'),
+      layeringRole: matchEnum(analyzed.layeringRole, VALID_ROLES, 'Base'),
+    }),
     hasVector: true,
     vectorSource,
     vector: sanitizeVector(vector, analyzed),

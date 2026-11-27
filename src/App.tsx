@@ -575,13 +575,7 @@ export default function App() {
   const isFullScreenAdvisor = activeTab === 'advisor' && Boolean(data);
 
   return (
-    <div
-      className={`${
-        isFullScreenAdvisor
-          ? 'h-[100dvh] overflow-hidden bg-white'
-          : 'min-h-screen bg-[#F5F5F7]'
-      } flex flex-col text-[#1D1D1F]`}
-    >
+    <div className="min-h-screen w-full overflow-x-hidden flex flex-col bg-[#F5F5F7] text-[#1D1D1F]">
       <TopNav
         activeTab={activeTab}
         onSelectTab={(tab) => {
@@ -598,7 +592,7 @@ export default function App() {
       <main
         className={
           isFullScreenAdvisor
-            ? 'flex-1 min-h-0 w-full flex flex-col pb-[53px] md:pb-0'
+            ? 'w-full h-[calc(100svh-64px-56px)] md:h-[calc(100svh-64px)] min-h-[420px] flex flex-col overflow-hidden bg-white'
             : 'flex-1 max-w-[1280px] w-full mx-auto px-5 sm:px-8 pt-8 pb-24 md:pb-16'
         }
       >
